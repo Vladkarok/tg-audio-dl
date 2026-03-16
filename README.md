@@ -44,6 +44,7 @@ git tag v1.2.3 && git push origin v1.2.3
 | `RATE_LIMIT_PER_MINUTE` | `5` | Requests per user per minute |
 | `PLAYLIST_MAX_TRACKS` | `50` | Max tracks from a playlist |
 | `LOG_LEVEL` | `INFO` | Logging level (DEBUG/INFO/WARNING/ERROR/CRITICAL) |
+| `COOKIES_FILE` | `None` | Host path to cookies.txt (docker-compose only) — needed on datacenter IPs; see [DEPLOY.md](DEPLOY.md) |
 | `S3_ENABLED` | `false` | Enable S3 secondary cache |
 | `S3_BUCKET` | — | S3 bucket name (required if S3_ENABLED=true) |
 | `AWS_ACCESS_KEY_ID` | — | AWS credentials for S3 |

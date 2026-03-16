@@ -17,8 +17,10 @@ ssh-copy-id -i ~/.ssh/deploy_youtube_bot.pub your-server
 ### 3. Create the app directory and cache folder on the server
 
 ```bash
-ssh your-server "mkdir -p ~/youtube-download-bot/cache && sudo chown -R \$(whoami):\$(whoami) ~/youtube-download-bot"
+ssh your-server "mkdir -p ~/youtube-download-bot/cache && chmod 777 ~/youtube-download-bot/cache"
 ```
+
+> The bot container runs as UID 10001 (non-root). Using `chmod 777` allows both the host user and the container to read/write the cache directory regardless of UID mapping differences between host and container.
 
 ### 4. Create the .env file on the server
 
@@ -35,11 +37,15 @@ ALLOWED_USER_IDS=[]
 LOG_LEVEL=INFO
 PLAYLIST_MAX_TRACKS=50
 RATE_LIMIT_PER_MINUTE=5
-GHCR_IMAGE=ghcr.io/YOUR_GITHUB_USERNAME/youtube-download-bot:v1.0.0
+GHCR_IMAGE=ghcr.io/your_github_username/youtube-download-bot:v1.0.0
+# Uncomment and set after following the "YouTube cookies" section below:
+# COOKIES_FILE=/home/ubuntu/youtube-download-bot/cookies.txt
 EOF
 ```
 
-Replace `YOUR_GITHUB_USERNAME` with your actual GitHub username.
+Replace `your_github_username` (lowercase) with your actual GitHub username and `v1.0.0` with the version you're deploying.
+
+> `TELEGRAM_LOCAL_SERVER_URL` is intentionally omitted — it is injected automatically by `docker-compose.yml` as `http://telegram-bot-api:8081`.
 
 ---
 
@@ -102,6 +108,41 @@ git tag v1.2.3 && git push origin v1.2.3
 The image is pushed to GHCR with two tags:
 - `ghcr.io/<owner>/youtube-download-bot:v1.2.3` — pinned version used for the deploy
 - `ghcr.io/<owner>/youtube-download-bot:latest` — always points to the last release
+
+---
+
+## YouTube cookies (required on datacenter IPs)
+
+Datacenter IPs (Oracle Cloud, AWS, etc.) are often flagged by YouTube and will get
+`Sign in to confirm you're not a bot` errors. Fix by passing browser cookies to yt-dlp.
+
+### 1. Export cookies from your browser
+
+Install the **"Get cookies.txt LOCALLY"** extension (Chrome/Firefox), log into YouTube,
+then export cookies for `youtube.com` → save as `cookies.txt`.
+
+### 2. Copy to the server and set permissions
+
+```bash
+scp cookies.txt your-server:~/youtube-download-bot/cookies.txt
+ssh your-server "chmod 666 ~/youtube-download-bot/cookies.txt"
+```
+
+> `chmod 666` is required — yt-dlp updates the cookies file after each request, and the container runs as a different UID than the host user.
+
+### 3. Add to `.env` on the server
+
+```bash
+COOKIES_FILE=/home/ubuntu/youtube-download-bot/cookies.txt
+```
+
+> `COOKIES_FILE` is the host path to your cookies file. Docker mounts it into the container at `/app/cookies.txt` — the bot detects it automatically, no other config needed.
+
+### 4. Restart the bot
+
+```bash
+ssh your-server "cd ~/youtube-download-bot && docker compose up -d --force-recreate bot"
+```
 
 ---
 

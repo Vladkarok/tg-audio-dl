@@ -19,9 +19,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
-# Create non-root user
-RUN groupadd --gid 1000 botuser && \
-    useradd --uid 1000 --gid 1000 --no-create-home --shell /bin/false botuser
+# Create non-root user with high UID to avoid collisions with host system users
+RUN groupadd --gid 10001 botuser && \
+    useradd --uid 10001 --gid 10001 --no-create-home --shell /bin/false botuser
 
 WORKDIR /app
 

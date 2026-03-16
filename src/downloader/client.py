@@ -98,9 +98,15 @@ ProgressCallback = Callable[[DownloadProgress], Awaitable[None]]
 class AudioDownloader:
     """Async wrapper around yt-dlp for downloading YouTube and SoundCloud audio."""
 
-    def __init__(self, download_dir: Path, max_file_size_bytes: int) -> None:
+    def __init__(
+        self,
+        download_dir: Path,
+        max_file_size_bytes: int,
+        cookies_file: Path | None = None,
+    ) -> None:
         self._download_dir = download_dir
         self._max_file_size_bytes = max_file_size_bytes
+        self._cookies_file = cookies_file
 
     # ------------------------------------------------------------------
     # Public API
@@ -333,6 +339,8 @@ class AudioDownloader:
         }
         if playlistend is not None:
             opts["playlistend"] = playlistend
+        if self._cookies_file is not None:
+            opts["cookiefile"] = str(self._cookies_file)
         return opts
 
     # ------------------------------------------------------------------

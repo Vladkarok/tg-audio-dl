@@ -40,6 +40,10 @@ services:
       TELEGRAM_LOCAL_SERVER_URL: http://telegram-bot-api:8081
     volumes:
       - ./cache:/app/cache:rw
+      # Optional: mount YouTube cookies file to bypass bot detection on datacenter IPs
+      # Create cookies.txt with a browser extension (e.g. "Get cookies.txt LOCALLY")
+      # then set YOUTUBE_COOKIES_FILE=/app/cookies.txt in .env
+      - ${COOKIES_FILE:-/dev/null}:/app/cookies.txt
     networks:
       - internal
     # Hardening
