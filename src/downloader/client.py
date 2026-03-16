@@ -19,9 +19,10 @@ import os
 import re
 import shutil
 import tempfile
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import yt_dlp
 
@@ -90,7 +91,7 @@ class FileTooLargeError(DownloadError):
 # Type alias
 # ---------------------------------------------------------------------------
 
-ProgressCallback = Callable[[DownloadProgress], Awaitable[None]]
+ProgressCallback = Callable[[DownloadProgress], Coroutine[Any, Any, None]]
 
 
 # ---------------------------------------------------------------------------
@@ -106,10 +107,12 @@ class AudioDownloader:
         download_dir: Path,
         max_file_size_bytes: int,
         cookies_file: Path | None = None,
+        proxy_url: str | None = None,
     ) -> None:
         self._download_dir = download_dir
         self._max_file_size_bytes = max_file_size_bytes
         self._cookies_file = cookies_file
+        self._proxy_url = proxy_url
 
     # ------------------------------------------------------------------
     # Public API
@@ -244,7 +247,7 @@ class AudioDownloader:
     # yt-dlp orchestration (synchronous — runs inside to_thread)
     # ------------------------------------------------------------------
 
-    def _run_ydl(self, ydl_opts: dict, url: str) -> dict:
+    def _run_ydl(self, ydl_opts: dict[str, Any], url: str) -> dict[str, Any]:
         """Call yt-dlp synchronously; translate errors to our hierarchy."""
         # Copy cookies to a temp file so yt-dlp never overwrites the original
         opts = ydl_opts
@@ -256,7 +259,7 @@ class AudioDownloader:
             opts = {**ydl_opts, "cookiefile": tmp_path}
         try:
             with yt_dlp.YoutubeDL(opts) as ydl:
-                info = ydl.extract_info(url, download=True)
+                info: dict[str, Any] = ydl.extract_info(url, download=True)
             return info
         except (
             yt_dlp.utils.DownloadError,
@@ -275,7 +278,9 @@ class AudioDownloader:
     # DownloadResult construction
     # ------------------------------------------------------------------
 
-    def _build_result(self, info: dict, cache_id: str | None = None) -> DownloadResult:
+    def _build_result(
+        self, info: dict[str, Any], cache_id: str | None = None
+    ) -> DownloadResult:
         """Build a DownloadResult from a yt-dlp info_dict.
 
         cache_id — if provided, used as result.video_id (our cache key).
@@ -333,8 +338,8 @@ class AudioDownloader:
         progress_callback: ProgressCallback | None,
         loop: asyncio.AbstractEventLoop,
         playlistend: int | None = None,
-    ) -> dict:
-        opts: dict = {
+    ) -> dict[str, Any]:
+        opts: dict[str, Any] = {
             "format": "bestaudio[ext=m4a]/bestaudio",
             "outtmpl": str(self._download_dir / "%(id)s.%(ext)s"),
             "writethumbnail": True,
@@ -354,6 +359,8 @@ class AudioDownloader:
             # Explicitly enable Node.js for YouTube JS signature challenges
             "js_runtimes": {"node": {}},
         }
+        if self._proxy_url is not None:
+            opts["proxy"] = self._proxy_url
         if playlistend is not None:
             opts["playlistend"] = playlistend
         if self._cookies_file is not None:
@@ -368,10 +375,10 @@ class AudioDownloader:
     def _make_sync_progress_hook(
         callback: ProgressCallback | None,
         loop: asyncio.AbstractEventLoop,
-    ) -> Callable[[dict], None]:
+    ) -> Callable[[dict[str, Any]], None]:
         """Return a sync hook that dispatches to *callback* on *loop*."""
 
-        def hook(d: dict) -> None:
+        def hook(d: dict[str, Any]) -> None:
             if callback is None:
                 return
 

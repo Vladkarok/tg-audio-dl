@@ -20,6 +20,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from enum import Enum, auto
+from typing import TypeGuard
 from urllib.parse import parse_qs, urlparse
 
 # ---------------------------------------------------------------------------
@@ -146,7 +147,7 @@ def _make_canonical_playlist(playlist_id: str) -> str:
     return f"https://www.youtube.com/playlist?list={playlist_id}"
 
 
-def _is_valid_video_id(vid: str | None) -> bool:
+def _is_valid_video_id(vid: str | None) -> TypeGuard[str]:
     """YouTube video IDs are exactly 11 URL-safe base64 characters."""
     if not vid:
         return False

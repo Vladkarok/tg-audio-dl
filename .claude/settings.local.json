@@ -21,7 +21,28 @@
       "Bash(git:*)",
       "Bash(gh api:*)",
       "Bash(ls:*)",
-      "Bash(ssh your-server:*)"
+      "Bash(ssh your-server:*)",
+      "Bash(git log:*)",
+      "Bash(gh run:*)",
+      "Bash(docker ps:*)",
+      "Bash(ssh oracle-shiny:*)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:dev.to)",
+      "Bash(uv sync:*)",
+      "Bash(uv add:*)"
+    ]
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cd /home/vladkarok/Work/youtube-download-bot && FILE=$(echo \"$CLAUDE_TOOL_INPUT\" | python3 -c \"import json,sys; d=json.load(sys.stdin); print(d.get('file_path',''))\" 2>/dev/null); if [[ \"$FILE\" == *.py ]] && [[ \"$FILE\" != *smoke_test.py* ]]; then uv run black \"$FILE\" 2>&1; uv run ruff check --fix \"$FILE\" 2>&1; uv run mypy \"$FILE\" 2>&1; fi"
+          }
+        ]
+      }
     ]
   }
 }

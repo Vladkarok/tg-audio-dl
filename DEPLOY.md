@@ -111,38 +111,89 @@ The image is pushed to GHCR with two tags:
 
 ---
 
-## YouTube cookies (required on datacenter IPs)
+## Proxy setup (required on datacenter IPs)
 
-Datacenter IPs (Oracle Cloud, AWS, etc.) are often flagged by YouTube and will get
-`Sign in to confirm you're not a bot` errors. Fix by passing browser cookies to yt-dlp.
+Datacenter IPs (Oracle Cloud, AWS, etc.) are blocked by YouTube at the IP level —
+all player clients return `Sign in to confirm you're not a bot`. PO tokens, cookies,
+and client spoofing do not help. The only reliable fix is routing yt-dlp traffic
+through a residential IP proxy.
 
-### 1. Export cookies from your browser
+### Option A: Residential proxy service
 
-Install the **"Get cookies.txt LOCALLY"** extension (Chrome/Firefox), log into YouTube,
-then export cookies for `youtube.com` → save as `cookies.txt`.
+Buy a residential/mobile proxy from a provider (e.g. smartproxy, brightdata, oxylabs).
+Most offer SOCKS5 proxies with rotating residential IPs.
 
-### 2. Copy to the server and set permissions
+Add to `.env` on the server:
 
 ```bash
+PROXY_URL=socks5://user:pass@proxy-host:1080
+```
+
+### Option B: Self-hosted proxy via home connection
+
+Run a SOCKS5 proxy on your home network (e.g. Raspberry Pi, old laptop, router)
+and tunnel into it from the server.
+
+**On your home machine** — install and start Dante (SOCKS5 server):
+
+```bash
+sudo apt install dante-server
+# Configure /etc/danted.conf, then:
+sudo systemctl enable danted && sudo systemctl start danted
+```
+
+**Or use SSH tunnel** (simpler, no software needed on home machine):
+
+```bash
+# On the server — creates a SOCKS5 proxy at localhost:1080 through your home IP
+ssh -D 1080 -f -N -o ServerAliveInterval=60 user@your-home-ip
+```
+
+Add to `.env`:
+
+```bash
+PROXY_URL=socks5://127.0.0.1:1080
+```
+
+### Option C: WireGuard tunnel
+
+Set up WireGuard between the server and a home device. Route only YouTube traffic
+through the tunnel. This is the most robust self-hosted option.
+
+### Verify the proxy works
+
+```bash
+ssh your-server "docker exec youtube-download-bot-bot-1 python3 /app/scripts/smoke_test.py"
+```
+
+### Restart after changing proxy
+
+```bash
+ssh your-server "cd ~/youtube-download-bot && docker compose up -d --force-recreate bot"
+```
+
+---
+
+## YouTube cookies (optional fallback)
+
+Cookies can be used alongside or instead of a proxy. They expire every 1-2 weeks
+and must be manually re-uploaded.
+
+### Setup
+
+```bash
+# Export cookies.txt from browser ("Get cookies.txt LOCALLY" extension)
 scp cookies.txt your-server:~/youtube-download-bot/cookies.txt
 ssh your-server "chmod 666 ~/youtube-download-bot/cookies.txt"
 ```
 
-> `chmod 666` is required — yt-dlp updates the cookies file after each request, and the container runs as a different UID than the host user.
-
-### 3. Add to `.env` on the server
+Add to `.env`:
 
 ```bash
 COOKIES_FILE=/home/ubuntu/youtube-download-bot/cookies.txt
 ```
 
-> `COOKIES_FILE` is the host path to your cookies file. Docker mounts it into the container at `/app/cookies.txt` — the bot detects it automatically, no other config needed.
-
-### 4. Restart the bot
-
-```bash
-ssh your-server "cd ~/youtube-download-bot && docker compose up -d --force-recreate bot"
-```
+> Docker mounts `COOKIES_FILE` into the container at `/app/cookies.txt` automatically.
 
 ---
 

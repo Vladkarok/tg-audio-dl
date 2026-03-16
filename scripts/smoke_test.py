@@ -60,7 +60,15 @@ def main() -> int:
     if not cookies_ok:
         print(f"  {WARN} Downloads will fail on datacenter IPs without cookies.")
 
-    # --- 5. Cookies validity (quick metadata check) ---
+    # --- 5. Proxy ---
+    proxy_url = os.environ.get("PROXY_URL", "").strip()
+    if proxy_url:
+        check("PROXY_URL configured", True, proxy_url.split("@")[-1])
+    else:
+        check("PROXY_URL configured", False, "not set")
+        print(f"  {WARN} Datacenter IPs need a proxy. Set PROXY_URL in .env")
+
+    # --- 6. Extraction check (no download) ---
     print("\n  Testing yt-dlp extract (no download)...")
     fd, tmp_cookies = tempfile.mkstemp(suffix=".txt")
     os.close(fd)
@@ -71,6 +79,8 @@ def main() -> int:
             "skip_download": True,
             "js_runtimes": {"node": {}},
         }
+        if proxy_url:
+            opts["proxy"] = proxy_url
         if cookies_ok:
             shutil.copy2(COOKIES_PATH, tmp_cookies)
             opts["cookiefile"] = tmp_cookies
@@ -86,11 +96,13 @@ def main() -> int:
     except Exception as e:
         msg = str(e)[:120]
         if "Sign in to confirm" in msg:
-            check("metadata extraction", False, "bot detection — cookies missing or expired")
-            print(f"  {WARN} Re-export cookies from a logged-in browser and re-upload.")
+            check("metadata extraction", False, "bot detection")
+            if not proxy_url:
+                print(f"  {WARN} Set PROXY_URL to a residential proxy in .env")
+            else:
+                print(f"  {WARN} Proxy may also be a datacenter IP. Use residential.")
         elif "no longer valid" in msg or "rotated" in msg:
             check("metadata extraction", False, "cookies expired/rotated by Google")
-            print(f"  {WARN} Re-export cookies from your browser and re-upload.")
         else:
             check("metadata extraction", False, msg)
         failures += 1

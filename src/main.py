@@ -1,5 +1,6 @@
 import logging
 from pathlib import Path
+from typing import Any
 
 from telegram.ext import (
     Application,
@@ -11,7 +12,7 @@ from telegram.ext import (
 from src.bot.filters import MediaURLFilter
 from src.bot.handlers import handle_help, handle_start, handle_url
 from src.cache import create_cache
-from src.config import get_settings
+from src.config import Settings, get_settings
 from src.downloader.client import AudioDownloader
 
 
@@ -25,7 +26,7 @@ def setup_logging(log_level: str) -> None:
     logging.getLogger("telegram").setLevel(logging.WARNING)
 
 
-async def post_init(application: Application) -> None:
+async def post_init(application: Application[Any, Any, Any, Any, Any, Any]) -> None:
     """Called after application is initialized. Wire dependencies into bot_data."""
     settings = application.bot_data["settings"]
 
@@ -43,13 +44,14 @@ async def post_init(application: Application) -> None:
         download_dir=settings.CACHE_DIR / "tmp",
         max_file_size_bytes=settings.MAX_FILE_SIZE_MB * 1024 * 1024,
         cookies_file=_cookies_file,
+        proxy_url=settings.PROXY_URL,
     )
     (settings.CACHE_DIR / "tmp").mkdir(parents=True, exist_ok=True)
 
     logging.getLogger(__name__).info("Bot initialized and ready")
 
 
-def build_application(settings) -> Application:
+def build_application(settings: Settings) -> Application[Any, Any, Any, Any, Any, Any]:
     builder = (
         ApplicationBuilder()
         .token(settings.TELEGRAM_BOT_TOKEN)

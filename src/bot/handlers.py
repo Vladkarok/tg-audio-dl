@@ -14,18 +14,21 @@ import logging
 import time
 from pathlib import Path
 
-from telegram import Update
+from telegram import Bot, Message, Update
 from telegram.ext import ContextTypes
 
 from src.bot.progress import ProgressManager, Step, StepStatus
+from src.cache.base import CacheBackend
+from src.config import Settings
 from src.downloader.client import (
+    AudioDownloader,
     DownloadError,
     DownloadProgress,
     DownloadResult,
     FileTooLargeError,
     VideoUnavailableError,
 )
-from src.downloader.url_parser import extract_media_urls
+from src.downloader.url_parser import ParsedURL, extract_media_urls
 from src.utils.sanitize import clean_title, sanitize_filename
 
 logger = logging.getLogger(__name__)
@@ -84,11 +87,15 @@ _HELP_TEXT = (
 
 async def handle_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Reply with welcome message explaining bot usage."""
+    if update.message is None:
+        return
     await update.message.reply_text(_WELCOME_TEXT)
 
 
 async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Reply with help text."""
+    if update.message is None:
+        return
     await update.message.reply_text(_HELP_TEXT)
 
 
@@ -99,6 +106,9 @@ async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Main handler: parse URL → check cache → download → upload."""
+    if update.effective_user is None or update.message is None:
+        return
+
     settings = context.bot_data["settings"]
     downloader = context.bot_data["downloader"]
     cache = context.bot_data["cache"]
@@ -159,9 +169,16 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
 
 async def _process_url(  # noqa: PLR0913
-    update, context, progress, parsed_url, downloader, cache, settings
-):
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    progress: ProgressManager,
+    parsed_url: ParsedURL,
+    downloader: AudioDownloader,
+    cache: CacheBackend,
+    settings: Settings,
+) -> None:
     """Inner orchestration: cache check → download → upload."""
+    assert update.message is not None  # guaranteed by handle_url guard
     video_id = parsed_url.video_id  # None for playlists
 
     # --- Cache check (single videos only) --------------------------------
@@ -192,7 +209,9 @@ async def _process_url(  # noqa: PLR0913
                 # fall through to normal upload below
 
         # Cache hit but no file_id (or file_id failed) — upload file
-        cached_path: Path = await cache.get(video_id)
+        cached_path: Path | None = await cache.get(video_id)
+        if cached_path is None:
+            return
         result = DownloadResult(
             file_path=cached_path,
             video_id=video_id,
@@ -267,7 +286,9 @@ async def _process_url(  # noqa: PLR0913
     await progress.delete()
 
 
-async def _send_audio(bot, chat_id: int, result, progress: ProgressManager):
+async def _send_audio(
+    bot: Bot, chat_id: int, result: DownloadResult, progress: ProgressManager
+) -> Message:
     """Send a single audio file to the user. Returns the sent Message."""
     await progress.set_step(Step.PROCESSING, StepStatus.DONE)
     display_title = clean_title(result.title) or result.video_id
@@ -288,7 +309,7 @@ async def _send_audio(bot, chat_id: int, result, progress: ProgressManager):
     return msg
 
 
-async def _edit_error(bot, progress: ProgressManager, text: str) -> None:
+async def _edit_error(bot: Bot, progress: ProgressManager, text: str) -> None:
     """Force-update the progress message with an error summary."""
     if progress._message_id is not None:
         try:

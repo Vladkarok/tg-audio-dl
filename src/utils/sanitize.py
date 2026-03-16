@@ -53,7 +53,7 @@ def format_duration(seconds: int | None) -> str:
 # ---------------------------------------------------------------------------
 
 # Patterns to strip from YouTube titles — order matters (most specific first)
-_CLEAN_PATTERNS: list[re.Pattern] = [
+_CLEAN_PATTERNS: list[re.Pattern[str]] = [
     # Bracketed / parenthesised noise tags — case-insensitive
     re.compile(
         r"[\[\(]"

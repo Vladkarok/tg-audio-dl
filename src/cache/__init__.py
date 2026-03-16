@@ -6,6 +6,7 @@ from pathlib import Path
 from src.cache.base import CacheBackend
 from src.cache.disk import DiskCache
 from src.cache.s3 import S3Cache
+from src.config import Settings
 
 logger = logging.getLogger(__name__)
 
@@ -86,7 +87,7 @@ class CompositeCache(CacheBackend):
 # ---------------------------------------------------------------------------
 
 
-def create_cache(settings) -> CacheBackend:
+def create_cache(settings: Settings) -> CacheBackend:
     """Return the appropriate CacheBackend based on *settings*.
 
     * ``S3_ENABLED=False``  →  :class:`DiskCache`
@@ -100,6 +101,7 @@ def create_cache(settings) -> CacheBackend:
     if not settings.S3_ENABLED:
         return disk
 
+    assert settings.S3_BUCKET is not None  # validated in Settings.validate_s3_config
     s3 = S3Cache(
         bucket=settings.S3_BUCKET,
         region=settings.AWS_REGION,

@@ -8,6 +8,7 @@ import logging
 import time
 from enum import Enum
 
+from telegram import Bot
 from telegram.error import BadRequest  # noqa: E402
 
 logger = logging.getLogger(__name__)
@@ -56,7 +57,7 @@ _DEBOUNCE_SECONDS: float = 1.0
 class ProgressManager:
     """Manages a live Telegram status message updated step-by-step."""
 
-    def __init__(self, bot, chat_id: int, reply_to_message_id: int) -> None:
+    def __init__(self, bot: Bot, chat_id: int, reply_to_message_id: int) -> None:
         self._bot = bot
         self._chat_id = chat_id
         self._reply_to_message_id = reply_to_message_id
@@ -64,7 +65,7 @@ class ProgressManager:
         self._last_edit_time: float = 0.0
         self._playlist_track: int | None = None
         self._playlist_total: int | None = None
-        self._upload_animation_task: asyncio.Task | None = None
+        self._upload_animation_task: asyncio.Task[None] | None = None
 
         # Initialise step state: RECEIVED=DONE, rest=PENDING
         self._steps: dict[Step, tuple[StepStatus, str]] = {
