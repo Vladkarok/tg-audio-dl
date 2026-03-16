@@ -101,7 +101,8 @@ def create_cache(settings: Settings) -> CacheBackend:
     if not settings.S3_ENABLED:
         return disk
 
-    assert settings.S3_BUCKET is not None  # validated in Settings.validate_s3_config
+    if settings.S3_BUCKET is None:
+        raise RuntimeError("S3_BUCKET must be set when S3_ENABLED=True")
     s3 = S3Cache(
         bucket=settings.S3_BUCKET,
         region=settings.AWS_REGION,

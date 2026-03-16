@@ -64,11 +64,6 @@ _YOUTUBE_HOSTS: frozenset[str] = frozenset(
     }
 )
 
-# Query parameters that carry no semantic meaning and must be stripped
-_TRACKING_PARAMS: frozenset[str] = frozenset(
-    {"si", "feature", "index", "t", "rv", "start_radio"}
-)
-
 # Regex to find candidate YouTube URLs inside free-form text
 _YT_URL_RE = re.compile(
     r"https?://(?:www\.|m\.|music\.)?(?:youtube\.com|youtu\.be)"

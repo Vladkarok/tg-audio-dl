@@ -4,27 +4,15 @@ import asyncio
 import contextlib
 import logging
 import os
-import re
 from pathlib import Path
 
 import aiofiles
 
-from src.cache.base import CacheBackend
+from src.cache.base import CacheBackend, validate_video_id
 
 CHUNK_SIZE = 256 * 1024  # 256 KB
 
 logger = logging.getLogger(__name__)
-
-# YouTube 11-char IDs, SoundCloud numeric IDs, and sc_slug cache keys (up to 64 chars).
-_VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
-
-
-def _validate_video_id(video_id: str) -> None:
-    """Raise ValueError if video_id does not match the expected pattern."""
-    if not _VIDEO_ID_RE.match(video_id):
-        raise ValueError(
-            f"Invalid video_id {video_id!r}: must match ^[A-Za-z0-9_-]{{1,64}}$"
-        )
 
 
 class DiskCache(CacheBackend):
@@ -58,7 +46,7 @@ class DiskCache(CacheBackend):
 
     async def get(self, video_id: str) -> Path | None:
         """Return cached path and update access time, or None if missing."""
-        _validate_video_id(video_id)
+        validate_video_id(video_id)
         path = self._path_for(video_id)
         if not path.exists():
             return None
@@ -68,7 +56,7 @@ class DiskCache(CacheBackend):
 
     async def put(self, video_id: str, file_path: Path) -> Path:
         """Copy *file_path* into the cache and trigger LRU eviction if needed."""
-        _validate_video_id(video_id)
+        validate_video_id(video_id)
         self._ensure_cache_dir()
         dest = self._path_for(video_id)
 
@@ -89,11 +77,11 @@ class DiskCache(CacheBackend):
         return dest
 
     async def exists(self, video_id: str) -> bool:
-        _validate_video_id(video_id)
+        validate_video_id(video_id)
         return self._path_for(video_id).exists()
 
     async def evict(self, video_id: str) -> None:
-        _validate_video_id(video_id)
+        validate_video_id(video_id)
         path = self._path_for(video_id)
         with contextlib.suppress(FileNotFoundError):
             await asyncio.to_thread(path.unlink)
@@ -102,7 +90,7 @@ class DiskCache(CacheBackend):
 
     async def get_file_id(self, video_id: str) -> str | None:
         """Return stored Telegram file_id or None if not stored."""
-        _validate_video_id(video_id)
+        validate_video_id(video_id)
         path = self._fid_path(video_id)
         if not await asyncio.to_thread(path.exists):
             return None
@@ -110,7 +98,7 @@ class DiskCache(CacheBackend):
 
     async def store_file_id(self, video_id: str, file_id: str) -> None:
         """Persist a Telegram file_id for the given video_id."""
-        _validate_video_id(video_id)
+        validate_video_id(video_id)
         self._ensure_cache_dir()
         await asyncio.to_thread(self._fid_path(video_id).write_text, file_id)
 

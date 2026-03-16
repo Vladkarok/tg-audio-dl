@@ -9,7 +9,7 @@ import time
 from enum import Enum
 
 from telegram import Bot
-from telegram.error import BadRequest  # noqa: E402
+from telegram.error import BadRequest
 
 logger = logging.getLogger(__name__)
 
@@ -139,6 +139,15 @@ class ProgressManager:
         self._playlist_track = track_index
         self._playlist_total = total_tracks
         await self._maybe_edit()
+
+    async def edit_text(self, text: str) -> None:
+        """Replace the progress message content with arbitrary *text*."""
+        if self._message_id is not None:
+            await self._bot.edit_message_text(
+                chat_id=self._chat_id,
+                message_id=self._message_id,
+                text=text,
+            )
 
     async def delete(self) -> None:
         """Delete the status message."""

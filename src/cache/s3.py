@@ -10,18 +10,16 @@ All S3 errors are caught and logged; operations degrade gracefully
 
 import asyncio
 import logging
-import re
 from pathlib import Path
 
 import boto3
 from botocore.exceptions import ClientError
 
-from src.cache.base import CacheBackend
+from src.cache.base import CacheBackend, validate_video_id
 
 logger = logging.getLogger(__name__)
 
 _S3_KEY_PREFIX = "audio/"
-_VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
 
 def _s3_key(video_id: str) -> str:
@@ -38,20 +36,12 @@ class S3Cache(CacheBackend):
         self._client = boto3.client("s3", region_name=region)
 
     # ------------------------------------------------------------------
-    # Input validation
-    # ------------------------------------------------------------------
-
-    def _validate_video_id(self, video_id: str) -> None:
-        if not _VIDEO_ID_RE.fullmatch(video_id):
-            raise ValueError(f"Invalid video_id: {video_id!r}")
-
-    # ------------------------------------------------------------------
     # CacheBackend interface
     # ------------------------------------------------------------------
 
     async def get(self, video_id: str) -> Path | None:
         """Download object from S3 to local_tmp_dir; return path or None."""
-        self._validate_video_id(video_id)
+        validate_video_id(video_id)
         local_path = self._local_tmp_dir / f"{video_id}.m4a"
 
         def _download() -> None:
@@ -72,7 +62,7 @@ class S3Cache(CacheBackend):
 
     async def put(self, video_id: str, file_path: Path) -> Path:
         """Upload *file_path* to S3; return original path on failure."""
-        self._validate_video_id(video_id)
+        validate_video_id(video_id)
 
         def _upload() -> None:
             self._client.upload_file(str(file_path), self._bucket, _s3_key(video_id))
@@ -85,7 +75,7 @@ class S3Cache(CacheBackend):
             return file_path
 
     async def exists(self, video_id: str) -> bool:
-        self._validate_video_id(video_id)
+        validate_video_id(video_id)
 
         def _head() -> bool:
             self._client.head_object(Bucket=self._bucket, Key=_s3_key(video_id))
@@ -104,7 +94,7 @@ class S3Cache(CacheBackend):
             return False
 
     async def evict(self, video_id: str) -> None:
-        self._validate_video_id(video_id)
+        validate_video_id(video_id)
 
         def _delete() -> None:
             self._client.delete_object(Bucket=self._bucket, Key=_s3_key(video_id))

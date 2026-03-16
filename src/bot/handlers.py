@@ -161,11 +161,10 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         )
     except Exception:
         logger.exception("Unexpected error in handle_url for user %d", user_id)
-        if progress is not None:
-            with contextlib.suppress(Exception):
-                await progress.set_step(
-                    Step.UPLOADING, StepStatus.ERROR, "An unexpected error occurred"
-                )
+        with contextlib.suppress(Exception):
+            await progress.set_step(
+                Step.UPLOADING, StepStatus.ERROR, "An unexpected error occurred"
+            )
 
 
 async def _process_url(  # noqa: PLR0913
@@ -311,12 +310,7 @@ async def _send_audio(
 
 async def _edit_error(bot: Bot, progress: ProgressManager, text: str) -> None:
     """Force-update the progress message with an error summary."""
-    if progress._message_id is not None:
-        try:
-            await bot.edit_message_text(
-                chat_id=progress._chat_id,
-                message_id=progress._message_id,
-                text=text,
-            )
-        except Exception:
-            logger.exception("Failed to edit error message")
+    try:
+        await progress.edit_text(text)
+    except Exception:
+        logger.exception("Failed to edit error message")

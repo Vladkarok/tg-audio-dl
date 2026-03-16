@@ -226,6 +226,8 @@ class AudioDownloader:
             yt_dlp.utils.UnsupportedError,
         ) as exc:
             raise VideoUnavailableError(str(exc)) from exc
+        except asyncio.CancelledError:
+            raise
         except Exception as exc:
             raise DownloadError(f"Unexpected download error: {exc}") from exc
 
