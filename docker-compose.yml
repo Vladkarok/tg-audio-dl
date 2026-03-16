@@ -1,0 +1,61 @@
+name: youtube-download-bot
+
+services:
+  telegram-bot-api:
+    image: aiogram/telegram-bot-api:7.11
+    restart: unless-stopped
+    environment:
+      TELEGRAM_API_ID: ${TELEGRAM_API_ID}
+      TELEGRAM_API_HASH: ${TELEGRAM_API_HASH}
+      TELEGRAM_LOCAL: "true"
+    volumes:
+      - telegram-api-data:/var/lib/telegram-bot-api
+    networks:
+      - internal
+    # No ports exposed to host — only internal network
+    security_opt:
+      - no-new-privileges:true
+    # Note: cap_drop ALL omitted — this image needs CAP_CHOWN at startup to own its data dir
+    mem_limit: 2g
+    cpus: "1.0"
+    tmpfs:
+      - /tmp:size=256m,noexec,nosuid,nodev
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO /dev/null http://127.0.0.1:8081 2>&1 | grep -qv 'Connection refused'"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+
+  bot:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      telegram-bot-api:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      TELEGRAM_LOCAL_SERVER_URL: http://telegram-bot-api:8081
+    volumes:
+      - ./cache:/app/cache:rw
+    networks:
+      - internal
+    # Hardening
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp:size=512m,noexec,nosuid,nodev
+    cap_drop:
+      - ALL
+    mem_limit: 1g
+    cpus: "1.0"
+    # No ports — bot only needs outbound connections
+
+networks:
+  internal:
+    driver: bridge
+    internal: false  # needs internet for YouTube
+
+volumes:
+  telegram-api-data:
