@@ -180,15 +180,6 @@ wheels = [
 ]
 
 [[package]]
-name = "bgutil-ytdlp-pot-provider"
-version = "1.3.1"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/ad/3f/fae025f0f4f4e8c40ca24a97f618abba82ad2a221d37ac3df7d6ff705df2/bgutil_ytdlp_pot_provider-1.3.1.tar.gz", hash = "sha256:130635912e2450757438f72068b900076ac1a62d9f26a00afbe6f2ab258e8b25", size = 11466, upload-time = "2026-03-07T00:28:23.234Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/74/5e/c7e388dd92667cb8c1d6ebbef3bd87dd2245a388b6819cbc2bea7c01c1cb/bgutil_ytdlp_pot_provider-1.3.1-py3-none-any.whl", hash = "sha256:e62b21f9b2e4479d59af87a8900387c34892e8d7fdb223f266749a90e0be22de", size = 12125, upload-time = "2026-03-07T00:28:22.004Z" },
-]
-
-[[package]]
 name = "black"
 version = "26.3.1"
 source = { registry = "https://pypi.org/simple" }
@@ -1103,6 +1094,15 @@ wheels = [
 ]
 
 [[package]]
+name = "pysocks"
+version = "1.7.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/bd/11/293dd436aea955d45fc4e8a35b6ae7270f5b8e00b53cf6c024c83b657a11/PySocks-1.7.1.tar.gz", hash = "sha256:3f8804571ebe159c380ac6de37643bb4685970655d3bba243530d6558b799aa0", size = 284429, upload-time = "2019-09-20T02:07:35.714Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/8d/59/b4572118e098ac8e46e399a1dd0f2d85403ce8bbaad9ec79373ed6badaf9/PySocks-1.7.1-py3-none-any.whl", hash = "sha256:2725bd0a9925919b9b51739eea5f9e2bae91e83288108a9ad338b2e3a4435ee5", size = 16725, upload-time = "2019-09-20T02:06:22.938Z" },
+]
+
+[[package]]
 name = "pytest"
 version = "9.0.2"
 source = { registry = "https://pypi.org/simple" }
@@ -1505,8 +1505,8 @@ source = { editable = "." }
 dependencies = [
     { name = "aioboto3" },
     { name = "aiofiles" },
-    { name = "bgutil-ytdlp-pot-provider" },
     { name = "pydantic-settings" },
+    { name = "pysocks" },
     { name = "python-telegram-bot" },
     { name = "yt-dlp" },
 ]
@@ -1527,8 +1527,8 @@ dev = [
 requires-dist = [
     { name = "aioboto3", specifier = ">=12.0" },
     { name = "aiofiles", specifier = ">=23.0" },
-    { name = "bgutil-ytdlp-pot-provider", specifier = ">=0.9.0" },
     { name = "pydantic-settings", specifier = ">=2.0" },
+    { name = "pysocks", specifier = ">=1.7" },
     { name = "python-telegram-bot", specifier = ">=20.7" },
     { name = "yt-dlp", specifier = ">=2024.1.1" },
 ]

@@ -107,10 +107,12 @@ class AudioDownloader:
         download_dir: Path,
         max_file_size_bytes: int,
         cookies_file: Path | None = None,
+        proxy_url: str | None = None,
     ) -> None:
         self._download_dir = download_dir
         self._max_file_size_bytes = max_file_size_bytes
         self._cookies_file = cookies_file
+        self._proxy_url = proxy_url
 
     # ------------------------------------------------------------------
     # Public API
@@ -356,14 +358,9 @@ class AudioDownloader:
             "progress_hooks": [self._make_sync_progress_hook(progress_callback, loop)],
             # Explicitly enable Node.js for YouTube JS signature challenges
             "js_runtimes": {"node": {}},
-            # Point bgutil HTTP provider at the sidecar container.
-            # Default is 127.0.0.1:4416 — must override with the Docker service name.
-            "extractor_args": {
-                "youtubepot-bgutilhttp": {
-                    "base_url": ["http://bgutil:4416"],
-                }
-            },
         }
+        if self._proxy_url is not None:
+            opts["proxy"] = self._proxy_url
         if playlistend is not None:
             opts["playlistend"] = playlistend
         if self._cookies_file is not None:

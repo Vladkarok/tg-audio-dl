@@ -40,6 +40,8 @@ class Settings(BaseSettings):
     AWS_SECRET_ACCESS_KEY: str | None = None
     AWS_REGION: str = "us-east-1"
 
+    PROXY_URL: str | None = None
+
     MAX_FILE_SIZE_MB: int = 2000
     ALLOWED_USER_IDS: list[int] = []
     LOG_LEVEL: str = "INFO"
@@ -64,6 +66,7 @@ class Settings(BaseSettings):
 
     @field_validator(
         "TELEGRAM_LOCAL_SERVER_URL",
+        "PROXY_URL",
         "S3_BUCKET",
         "AWS_ACCESS_KEY_ID",
         "AWS_SECRET_ACCESS_KEY",
