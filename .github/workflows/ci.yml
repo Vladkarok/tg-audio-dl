@@ -122,8 +122,9 @@ jobs:
             # Authenticate to pull private image
             echo "$GHCR_TOKEN" | docker login ghcr.io -u "$REPO_OWNER" --password-stdin
 
-            # Override image with the one just built in CI
-            export GHCR_IMAGE="$GHCR_IMAGE"
+            # Persist image tag in .env so it survives reboots and manual restarts
+            sed -i "s|^GHCR_IMAGE=.*|GHCR_IMAGE=${GHCR_IMAGE}|" .env
+            grep -q '^GHCR_IMAGE=' .env || echo "GHCR_IMAGE=${GHCR_IMAGE}" >> .env
 
             # Pull new bot image only (telegram-bot-api uses a pinned public image)
             docker compose pull bot

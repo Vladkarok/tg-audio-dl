@@ -856,8 +856,8 @@ class TestPostprocessorOrder:
         # Must have exactly 3 explicit postprocessors
         assert len(pps) == 3
         assert pps[0]["key"] == "FFmpegThumbnailsConvertor"
-        assert pps[1]["key"] == "EmbedThumbnail"
-        assert pps[2]["key"] == "FFmpegMetadata"
+        assert pps[1]["key"] == "FFmpegMetadata"
+        assert pps[2]["key"] == "EmbedThumbnail"
         # embedthumbnail and addmetadata flags must be removed
         assert "embedthumbnail" not in opts
         assert "addmetadata" not in opts

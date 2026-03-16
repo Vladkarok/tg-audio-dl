@@ -12,11 +12,8 @@ Or from the host:
 import os
 import shutil
 import sys
-import tempfile
-from pathlib import Path
 
 TEST_URL = "https://www.youtube.com/watch?v=jNQXAC9IVRw"  # "Me at the zoo" — first YT video, always public
-COOKIES_PATH = Path("/app/cookies.txt")
 
 PASS = "\033[92m✓\033[0m"
 FAIL = "\033[91m✗\033[0m"
@@ -53,14 +50,7 @@ def main() -> int:
         print("\nCannot continue without yt-dlp.\n")
         return failures
 
-    # --- 4. Cookies file ---
-    cookies_ok = COOKIES_PATH.exists() and COOKIES_PATH.stat().st_size > 0
-    check("cookies.txt present and non-empty", cookies_ok,
-          f"{COOKIES_PATH.stat().st_size} bytes" if cookies_ok else "missing or empty")
-    if not cookies_ok:
-        print(f"  {WARN} Downloads will fail on datacenter IPs without cookies.")
-
-    # --- 5. Proxy ---
+    # --- 4. Proxy ---
     proxy_url = os.environ.get("PROXY_URL", "").strip()
     if proxy_url:
         check("PROXY_URL configured", True, proxy_url.split("@")[-1])
@@ -68,10 +58,8 @@ def main() -> int:
         check("PROXY_URL configured", False, "not set")
         print(f"  {WARN} Datacenter IPs need a proxy. Set PROXY_URL in .env")
 
-    # --- 6. Extraction check (no download) ---
+    # --- 5. Extraction check (no download) ---
     print("\n  Testing yt-dlp extract (no download)...")
-    fd, tmp_cookies = tempfile.mkstemp(suffix=".txt")
-    os.close(fd)
     try:
         opts: dict = {
             "quiet": True,
@@ -81,9 +69,6 @@ def main() -> int:
         }
         if proxy_url:
             opts["proxy"] = proxy_url
-        if cookies_ok:
-            shutil.copy2(COOKIES_PATH, tmp_cookies)
-            opts["cookiefile"] = tmp_cookies
 
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(TEST_URL, download=False)
@@ -101,18 +86,9 @@ def main() -> int:
                 print(f"  {WARN} Set PROXY_URL to a residential proxy in .env")
             else:
                 print(f"  {WARN} Proxy may also be a datacenter IP. Use residential.")
-        elif "no longer valid" in msg or "rotated" in msg:
-            check("metadata extraction", False, "cookies expired/rotated by Google")
         else:
             check("metadata extraction", False, msg)
         failures += 1
-    finally:
-        with open(os.devnull, "w") as devnull:
-            pass
-        try:
-            os.unlink(tmp_cookies)
-        except OSError:
-            pass
 
     # --- Summary ---
     print()

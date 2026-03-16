@@ -42,8 +42,6 @@ services:
       - "host.docker.internal:host-gateway"
     volumes:
       - ./cache:/app/cache:rw
-      # Optional: mount YouTube cookies for additional authentication as fallback
-      - ${COOKIES_FILE:-/dev/null}:/app/cookies.txt
     networks:
       - internal
     # Hardening

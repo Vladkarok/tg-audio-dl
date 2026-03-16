@@ -37,9 +37,7 @@ ALLOWED_USER_IDS=[]
 LOG_LEVEL=INFO
 PLAYLIST_MAX_TRACKS=50
 RATE_LIMIT_PER_MINUTE=5
-GHCR_IMAGE=ghcr.io/your_github_username/youtube-download-bot:v1.0.0
-# Uncomment and set after following the "YouTube cookies" section below:
-# COOKIES_FILE=/home/ubuntu/youtube-download-bot/cookies.txt
+GHCR_IMAGE=ghcr.io/your_github_username/youtube-download-bot:v1.1.0
 EOF
 ```
 
@@ -171,29 +169,6 @@ ssh your-server "docker exec youtube-download-bot-bot-1 python3 /app/scripts/smo
 ```bash
 ssh your-server "cd ~/youtube-download-bot && docker compose up -d --force-recreate bot"
 ```
-
----
-
-## YouTube cookies (optional fallback)
-
-Cookies can be used alongside or instead of a proxy. They expire every 1-2 weeks
-and must be manually re-uploaded.
-
-### Setup
-
-```bash
-# Export cookies.txt from browser ("Get cookies.txt LOCALLY" extension)
-scp cookies.txt your-server:~/youtube-download-bot/cookies.txt
-ssh your-server "chmod 666 ~/youtube-download-bot/cookies.txt"
-```
-
-Add to `.env`:
-
-```bash
-COOKIES_FILE=/home/ubuntu/youtube-download-bot/cookies.txt
-```
-
-> Docker mounts `COOKIES_FILE` into the container at `/app/cookies.txt` automatically.
 
 ---
 

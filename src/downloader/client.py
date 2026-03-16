@@ -15,10 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import os
 import re
-import shutil
-import tempfile
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
 from pathlib import Path
@@ -106,12 +103,10 @@ class AudioDownloader:
         self,
         download_dir: Path,
         max_file_size_bytes: int,
-        cookies_file: Path | None = None,
         proxy_url: str | None = None,
     ) -> None:
         self._download_dir = download_dir
         self._max_file_size_bytes = max_file_size_bytes
-        self._cookies_file = cookies_file
         self._proxy_url = proxy_url
 
     # ------------------------------------------------------------------
@@ -249,16 +244,8 @@ class AudioDownloader:
 
     def _run_ydl(self, ydl_opts: dict[str, Any], url: str) -> dict[str, Any]:
         """Call yt-dlp synchronously; translate errors to our hierarchy."""
-        # Copy cookies to a temp file so yt-dlp never overwrites the original
-        opts = ydl_opts
-        tmp_path: str | None = None
-        if self._cookies_file is not None:
-            fd, tmp_path = tempfile.mkstemp(suffix=".txt")
-            os.close(fd)
-            shutil.copy2(self._cookies_file, tmp_path)
-            opts = {**ydl_opts, "cookiefile": tmp_path}
         try:
-            with yt_dlp.YoutubeDL(opts) as ydl:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info: dict[str, Any] = ydl.extract_info(url, download=True)
             return info
         except (
@@ -269,10 +256,6 @@ class AudioDownloader:
             raise VideoUnavailableError(str(exc)) from exc
         except Exception as exc:
             raise DownloadError(f"Unexpected download error: {exc}") from exc
-        finally:
-            if tmp_path is not None:
-                with contextlib.suppress(OSError):
-                    os.unlink(tmp_path)
 
     # ------------------------------------------------------------------
     # DownloadResult construction
@@ -345,12 +328,12 @@ class AudioDownloader:
             "writethumbnail": True,
             "embedchapters": True,
             "postprocessors": [
-                # 1. Convert WebP thumbnail to JPG first (must precede embed)
+                # 1. Convert WebP thumbnail to JPG (must precede embed)
                 {"key": "FFmpegThumbnailsConvertor", "format": "jpg"},
-                # 2. Embed the JPG thumbnail into the audio container
-                {"key": "EmbedThumbnail"},
-                # 3. Write all metadata tags
+                # 2. Write metadata tags first (ffmpeg -vn strips cover art)
                 {"key": "FFmpegMetadata"},
+                # 3. Embed thumbnail LAST via mutagen (survives ffmpeg)
+                {"key": "EmbedThumbnail"},
             ],
             "quiet": True,
             "no_warnings": True,
@@ -363,8 +346,6 @@ class AudioDownloader:
             opts["proxy"] = self._proxy_url
         if playlistend is not None:
             opts["playlistend"] = playlistend
-        if self._cookies_file is not None:
-            opts["cookiefile"] = str(self._cookies_file)
         return opts
 
     # ------------------------------------------------------------------

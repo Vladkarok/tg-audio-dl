@@ -1,5 +1,4 @@
 import logging
-from pathlib import Path
 from typing import Any
 
 from telegram.ext import (
@@ -35,15 +34,9 @@ async def post_init(application: Application[Any, Any, Any, Any, Any, Any]) -> N
 
     # Wire dependencies
     application.bot_data["cache"] = create_cache(settings)
-    # Use a fixed well-known container path; mounted via COOKIES_FILE in docker-compose
-    _cookies = Path("/app/cookies.txt")
-    _cookies_file = (
-        _cookies if _cookies.exists() and _cookies.stat().st_size > 0 else None
-    )
     application.bot_data["downloader"] = AudioDownloader(
         download_dir=settings.CACHE_DIR / "tmp",
         max_file_size_bytes=settings.MAX_FILE_SIZE_MB * 1024 * 1024,
-        cookies_file=_cookies_file,
         proxy_url=settings.PROXY_URL,
     )
     (settings.CACHE_DIR / "tmp").mkdir(parents=True, exist_ok=True)
