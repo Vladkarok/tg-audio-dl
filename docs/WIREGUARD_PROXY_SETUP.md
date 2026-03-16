@@ -163,6 +163,11 @@ echo "200 wgout" | sudo tee -a /etc/iproute2/rt_tables
 
 Create a systemd service that sets up the routing rules (survives reboot):
 
+> **Important:** Three extra rules beyond basic fwmark routing are needed:
+> 1. **Endpoint bypass** — WireGuard copies fwmark to encrypted outer packets, creating a routing loop. An `ip rule` for the WG endpoint forces those packets through the main table.
+> 2. **MASQUERADE on wg0** — The kernel binds the source IP before policy routing kicks in, so packets leave wg0 with the VPS main IP instead of the WG tunnel IP. MASQUERADE fixes the source.
+> 3. **Private range RETURN rules** — Without these, microsocks' TCP responses to Docker containers also get routed into the tunnel instead of back to the client.
+
 ```bash
 sudo tee /etc/systemd/system/wg-routing.service << 'EOF'
 [Unit]
@@ -175,12 +180,26 @@ Type=oneshot
 RemainAfterExit=yes
 ExecStart=/bin/bash -c '\
     ip route replace default via 172.20.0.2 table wgout; \
+    ip rule add to <YOUR_HOME_STATIC_IP>/32 lookup main priority 100 2>/dev/null; \
     ip rule add fwmark 0x1 table wgout 2>/dev/null; \
+    iptables -t mangle -C OUTPUT -m owner --uid-owner wgproxy -d 10.0.0.0/8 -j RETURN 2>/dev/null || \
+    iptables -t mangle -I OUTPUT 1 -m owner --uid-owner wgproxy -d 10.0.0.0/8 -j RETURN; \
+    iptables -t mangle -C OUTPUT -m owner --uid-owner wgproxy -d 172.16.0.0/12 -j RETURN 2>/dev/null || \
+    iptables -t mangle -I OUTPUT 2 -m owner --uid-owner wgproxy -d 172.16.0.0/12 -j RETURN; \
+    iptables -t mangle -C OUTPUT -m owner --uid-owner wgproxy -d 127.0.0.0/8 -j RETURN 2>/dev/null || \
+    iptables -t mangle -I OUTPUT 3 -m owner --uid-owner wgproxy -d 127.0.0.0/8 -j RETURN; \
     iptables -t mangle -C OUTPUT -m owner --uid-owner wgproxy -j MARK --set-mark 0x1 2>/dev/null || \
-    iptables -t mangle -A OUTPUT -m owner --uid-owner wgproxy -j MARK --set-mark 0x1'
+    iptables -t mangle -A OUTPUT -m owner --uid-owner wgproxy -j MARK --set-mark 0x1; \
+    iptables -t nat -C POSTROUTING -o wg0 -j MASQUERADE 2>/dev/null || \
+    iptables -t nat -A POSTROUTING -o wg0 -j MASQUERADE'
 ExecStop=/bin/bash -c '\
+    ip rule del to <YOUR_HOME_STATIC_IP>/32 lookup main priority 100 2>/dev/null; \
     ip rule del fwmark 0x1 table wgout 2>/dev/null; \
+    iptables -t mangle -D OUTPUT -m owner --uid-owner wgproxy -d 10.0.0.0/8 -j RETURN 2>/dev/null; \
+    iptables -t mangle -D OUTPUT -m owner --uid-owner wgproxy -d 172.16.0.0/12 -j RETURN 2>/dev/null; \
+    iptables -t mangle -D OUTPUT -m owner --uid-owner wgproxy -d 127.0.0.0/8 -j RETURN 2>/dev/null; \
     iptables -t mangle -D OUTPUT -m owner --uid-owner wgproxy -j MARK --set-mark 0x1 2>/dev/null; \
+    iptables -t nat -D POSTROUTING -o wg0 -j MASQUERADE 2>/dev/null; \
     ip route del default table wgout 2>/dev/null; true'
 
 [Install]
@@ -233,8 +252,11 @@ If it shows your home IP — the tunnel works.
 
 ### 4.1 Add PROXY_URL to .env on the server
 
+Use the VPS's internal IP (not `host.docker.internal`, which maps to docker0 and may be unreachable from custom bridge networks):
+
 ```bash
-echo 'PROXY_URL=socks5://host.docker.internal:1080' >> ~/youtube-download-bot/.env
+# Replace 10.0.0.65 with your VPS's private IP (ip addr show ens3)
+echo 'PROXY_URL=socks5://10.0.0.65:1080' >> ~/youtube-download-bot/.env
 ```
 
 ### 4.2 Restart the bot
@@ -253,12 +275,28 @@ All checks should pass — YouTube now sees your home IP.
 
 ---
 
+### 4.3 Allow Docker containers to reach microsocks
+
+The VPS firewall may block port 1080 from Docker subnets. Add an INPUT rule (before any REJECT/DROP):
+
+```bash
+# Find the position of the REJECT rule
+sudo iptables -L INPUT -n --line-numbers | grep REJECT
+# Insert before it (replace 7 with the REJECT rule's line number)
+sudo iptables -I INPUT 7 -s 172.0.0.0/8 -p tcp --dport 1080 -j ACCEPT
+```
+
+> **Note:** To persist this across reboots, add the rule to your iptables save/restore mechanism (e.g., `iptables-persistent`).
+
+---
+
 ## Troubleshooting
 
 | Symptom | Fix |
 |---|---|
 | `ping 172.20.0.2` fails | Check MikroTik input firewall allows UDP 13231. Check `sudo wg show` for handshake. |
-| `curl --socks5-hostname` hangs | Check `sudo systemctl status microsocks` and `wg-routing`. Check `iptables -t mangle -L -n`. |
-| `curl` shows Oracle IP (not home IP) | Routing table not active. Run `ip rule list` — should show fwmark 0x1 → table wgout. |
+| `curl --socks5-hostname` hangs | Check `sudo systemctl status microsocks` and `wg-routing`. Check `iptables -t mangle -L -n`. Also verify the WG endpoint bypass rule exists: `ip rule list` should show your home IP → lookup main before the fwmark rule. |
+| `curl` shows Oracle IP (not home IP) | Check MASQUERADE: `iptables -t nat -L POSTROUTING -n` should show MASQUERADE on wg0. |
+| Bot gets "Connection refused" to proxy | Either microsocks is down (`systemctl status microsocks`), or VPS firewall blocks Docker→port 1080 (see section 4.3). Use VPS internal IP in PROXY_URL, not `host.docker.internal`. |
 | Bot still gets "Sign in to confirm" | Verify `PROXY_URL` is in `.env`. Run `docker exec ... env \| grep PROXY` to confirm. |
 | microsocks won't start | Check `sudo systemctl status microsocks -l`. |

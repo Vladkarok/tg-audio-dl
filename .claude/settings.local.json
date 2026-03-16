@@ -29,7 +29,12 @@
       "WebFetch(domain:github.com)",
       "WebFetch(domain:dev.to)",
       "Bash(uv sync:*)",
-      "Bash(uv add:*)"
+      "Bash(uv add:*)",
+      "Bash(gh search:*)",
+      "Bash(gh issue:*)",
+      "Bash(gh pr:*)",
+      "WebFetch(domain:cobalt.tools)",
+      "Bash(uv remove:*)"
     ]
   },
   "hooks": {
