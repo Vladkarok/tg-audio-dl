@@ -14,9 +14,10 @@ RUN uv sync --frozen --no-dev --no-install-project
 # Production stage
 FROM python:3.13-slim AS final
 
-# Install ffmpeg (needed by yt-dlp for audio processing fallback)
+# Install ffmpeg and nodejs (ffmpeg for audio conversion, nodejs for yt-dlp JS challenge solving)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
+    nodejs \
     && rm -rf /var/lib/apt/lists/*
 
 # Create non-root user with high UID to avoid collisions with host system users
@@ -33,6 +34,7 @@ COPY --from=builder /app/.venv /app/.venv
 
 # Copy source
 COPY src/ ./src/
+COPY scripts/ ./scripts/
 COPY pyproject.toml ./
 
 # Create cache directory owned by botuser
