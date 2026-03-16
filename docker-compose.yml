@@ -1,6 +1,16 @@
 name: youtube-download-bot
 
 services:
+  bgutil:
+    image: brainicism/bgutil-ytdlp-pot-provider:latest
+    restart: unless-stopped
+    networks:
+      - internal
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 256m
+    cpus: "0.5"
+
   telegram-bot-api:
     image: aiogram/telegram-bot-api:7.11
     restart: unless-stopped
@@ -33,16 +43,17 @@ services:
     build: .
     restart: unless-stopped
     depends_on:
+      bgutil:
+        condition: service_started
       telegram-bot-api:
         condition: service_healthy
     env_file: .env
     environment:
       TELEGRAM_LOCAL_SERVER_URL: http://telegram-bot-api:8081
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     volumes:
       - ./cache:/app/cache:rw
       # Optional: mount YouTube cookies for additional authentication as fallback
+      # (bgutil PO token provider is the primary bot-detection bypass)
       - ${COOKIES_FILE:-/dev/null}:/app/cookies.txt
     networks:
       - internal
