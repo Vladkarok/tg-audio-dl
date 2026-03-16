@@ -177,14 +177,14 @@ class TestS3CacheValidatesVideoId:
             _make_bucket()
             cache = S3Cache(bucket=BUCKET, region=REGION, local_tmp_dir=local_tmp)
             with pytest.raises(ValueError, match="Invalid video_id"):
-                await cache.exists("too_short")
+                await cache.exists("has/slash")
 
     async def test_s3_rejects_invalid_video_id_evict(self, local_tmp: Path) -> None:
         with mock_aws():
             _make_bucket()
             cache = S3Cache(bucket=BUCKET, region=REGION, local_tmp_dir=local_tmp)
             with pytest.raises(ValueError, match="Invalid video_id"):
-                await cache.evict("way_too_long_video_id_here")
+                await cache.evict("a" * 65)
 
 
 class TestS3CacheGracefulErrors:

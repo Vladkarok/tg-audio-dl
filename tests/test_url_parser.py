@@ -4,7 +4,7 @@ Covers all 16 URL cases from the spec plus edge cases for:
 - canonical_url normalization
 - tracking param stripping
 - video_id / playlist_id extraction
-- extract_youtube_urls() helper
+- extract_media_urls() helper
 """
 
 import pytest
@@ -14,7 +14,6 @@ from src.downloader.url_parser import (
     Platform,
     URLType,
     extract_media_urls,
-    extract_youtube_urls,
     parse_soundcloud_url,
     parse_youtube_url,
 )
@@ -509,16 +508,21 @@ class TestURLTypeEnum:
 
 
 # ===========================================================================
-# extract_youtube_urls — helper function
+# extract_media_urls — YouTube-only extraction
 # ===========================================================================
 
 
+def _extract_youtube_only(text: str) -> list[ParsedURL]:
+    """Helper: extract only YouTube URLs from text."""
+    return [u for u in extract_media_urls(text) if u.platform == Platform.YOUTUBE]
+
+
 class TestExtractYouTubeURLs:
-    """Tests for extract_youtube_urls(text) → list[ParsedURL]."""
+    """Tests for extract_media_urls(text) filtering YouTube results."""
 
     def test_single_url_embedded_in_sentence(self):
         text = f"Hey, check this out: https://www.youtube.com/watch?v={VIDEO_ID} it's great!"
-        results = extract_youtube_urls(text)
+        results = _extract_youtube_only(text)
         assert len(results) == 1
         assert results[0].url_type == URLType.SINGLE
         assert results[0].video_id == VIDEO_ID
@@ -528,7 +532,7 @@ class TestExtractYouTubeURLs:
             f"First: https://www.youtube.com/watch?v={VIDEO_ID} "
             f"and also https://youtu.be/AbCdEfG1234"
         )
-        results = extract_youtube_urls(text)
+        results = _extract_youtube_only(text)
         assert len(results) == 2
         video_ids = {r.video_id for r in results}
         assert VIDEO_ID in video_ids
@@ -536,57 +540,57 @@ class TestExtractYouTubeURLs:
 
     def test_no_urls_returns_empty_list(self):
         text = "There are no YouTube links in this message at all."
-        results = extract_youtube_urls(text)
+        results = _extract_youtube_only(text)
         assert results == []
 
     def test_text_that_is_a_url(self):
         text = f"https://www.youtube.com/watch?v={VIDEO_ID}"
-        results = extract_youtube_urls(text)
+        results = _extract_youtube_only(text)
         assert len(results) == 1
         assert results[0].video_id == VIDEO_ID
 
     def test_non_youtube_urls_excluded(self):
         text = "Go to https://google.com and also https://vimeo.com/123 not YouTube"
-        results = extract_youtube_urls(text)
+        results = _extract_youtube_only(text)
         assert results == []
 
     def test_mixed_youtube_and_non_youtube(self):
         text = f"See https://google.com and https://youtu.be/{VIDEO_ID} for details"
-        results = extract_youtube_urls(text)
+        results = _extract_youtube_only(text)
         assert len(results) == 1
         assert results[0].video_id == VIDEO_ID
 
     def test_playlist_url_extracted(self):
         text = f"Full album: https://www.youtube.com/playlist?list={PLAYLIST_ID}"
-        results = extract_youtube_urls(text)
+        results = _extract_youtube_only(text)
         assert len(results) == 1
         assert results[0].url_type == URLType.PLAYLIST
         assert results[0].playlist_id == PLAYLIST_ID
 
     def test_radio_url_extracted(self):
         text = f"Radio: https://www.youtube.com/watch?v={VIDEO_ID}&list={RADIO_ID}"
-        results = extract_youtube_urls(text)
+        results = _extract_youtube_only(text)
         assert len(results) == 1
         assert results[0].url_type == URLType.RADIO_MIX
 
     def test_duplicate_urls_both_returned(self):
-        """Same URL twice → two ParsedURL objects (dedup is caller's concern)."""
+        """Same URL twice -> two ParsedURL objects (dedup is caller's concern)."""
         url = f"https://www.youtube.com/watch?v={VIDEO_ID}"
         text = f"{url} and again {url}"
-        results = extract_youtube_urls(text)
+        results = _extract_youtube_only(text)
         assert len(results) == 2
 
     def test_empty_text_returns_empty_list(self):
-        results = extract_youtube_urls("")
+        results = _extract_youtube_only("")
         assert results == []
 
     def test_returns_list_type(self):
-        results = extract_youtube_urls("no urls here")
+        results = _extract_youtube_only("no urls here")
         assert isinstance(results, list)
 
     def test_youtu_be_with_tracking_extracted_and_normalized(self):
         text = f"Listen: https://youtu.be/{VIDEO_ID}?si=trackingABC cool right?"
-        results = extract_youtube_urls(text)
+        results = _extract_youtube_only(text)
         assert len(results) == 1
         assert results[0].canonical_url == canonical_single(VIDEO_ID)
 

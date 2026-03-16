@@ -343,8 +343,3 @@ def extract_media_urls(text: str) -> list[ParsedURL]:
             results.append(parsed)
 
     return results
-
-
-def extract_youtube_urls(text: str) -> list[ParsedURL]:
-    """Backward-compatible alias — returns only YouTube URLs from *text*."""
-    return [u for u in extract_media_urls(text) if u.platform == Platform.YOUTUBE]

@@ -521,52 +521,6 @@ class TestProgressHookHandlesMissingTotalBytes:
 
 
 # ---------------------------------------------------------------------------
-# test_download_single_by_id
-# ---------------------------------------------------------------------------
-
-
-class TestDownloadSingleById:
-    """download_single(video_id) works and returns a DownloadResult."""
-
-    async def test_download_single_by_id(self, tmp_path: Path) -> None:
-        _create_fake_m4a(tmp_path, VIDEO_ID)
-
-        downloader = AudioDownloader(
-            download_dir=tmp_path, max_file_size_bytes=10 * 1024 * 1024
-        )
-
-        captured_opts: list[dict] = []
-
-        def fake_ydl_cls(opts):
-            captured_opts.append(opts)
-            return _make_ydl_mock(FAKE_SINGLE_INFO)
-
-        with patch("src.downloader.client.yt_dlp.YoutubeDL", side_effect=fake_ydl_cls):
-            result = await downloader.download_single(VIDEO_ID)
-
-        assert isinstance(result, DownloadResult)
-        assert result.video_id == VIDEO_ID
-        assert captured_opts[0]["noplaylist"] is True
-
-
-# ---------------------------------------------------------------------------
-# test_download_single_by_id_invalid_raises
-# ---------------------------------------------------------------------------
-
-
-class TestDownloadSingleByIdInvalidRaises:
-    """download_single() raises DownloadError for an invalid video_id."""
-
-    async def test_download_single_by_id_invalid_raises(self, tmp_path: Path) -> None:
-        downloader = AudioDownloader(
-            download_dir=tmp_path, max_file_size_bytes=10 * 1024 * 1024
-        )
-
-        with pytest.raises(DownloadError):
-            await downloader.download_single("not_valid!!")
-
-
-# ---------------------------------------------------------------------------
 # test_download_result_artist_falls_back_to_channel
 # ---------------------------------------------------------------------------
 

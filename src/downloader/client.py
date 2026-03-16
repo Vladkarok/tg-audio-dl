@@ -32,9 +32,6 @@ from src.downloader.url_parser import ParsedURL, Platform, URLType
 # Accepts YouTube 11-char IDs, SoundCloud numeric IDs, and sc_slug cache keys
 _TRACK_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
-# Keep for download_single() which is YouTube-only
-_YT_VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
-
 
 @dataclass(frozen=True)
 class DownloadResult:
@@ -155,31 +152,6 @@ class AudioDownloader:
             loop=loop,
         )
         return [result]
-
-    async def download_single(
-        self,
-        video_id: str,
-        progress_callback: ProgressCallback | None = None,
-    ) -> DownloadResult:
-        """Download a single YouTube video by its 11-character video ID.
-
-        Raises DownloadError if video_id is invalid.
-        """
-        if not _YT_VIDEO_ID_RE.match(video_id):
-            raise DownloadError(
-                f"Invalid video_id {video_id!r}: must be 11 URL-safe base64 characters"
-            )
-
-        loop = asyncio.get_running_loop()
-        url = f"https://www.youtube.com/watch?v={video_id}"
-        return await self._download_one(
-            url=url,
-            yt_id=video_id,
-            cache_id=None,
-            noplaylist=True,
-            progress_callback=progress_callback,
-            loop=loop,
-        )
 
     # ------------------------------------------------------------------
     # Private helpers

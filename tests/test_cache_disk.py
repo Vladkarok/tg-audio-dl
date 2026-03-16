@@ -174,11 +174,10 @@ class TestDiskCacheVideoIdValidation:
         [
             "../etc/passwd",
             "../../secret",
-            "short",
-            "toolongid12345",
             "has space   ",
             "has/slash!!",
             "",
+            "a" * 65,  # exceeds 64-char limit
         ],
     )
     async def test_put_rejects_invalid_video_id(
@@ -191,8 +190,8 @@ class TestDiskCacheVideoIdValidation:
         "bad_id",
         [
             "../etc/passwd",
-            "short",
-            "toolongid12345",
+            "has/slash!!",
+            "a" * 65,
         ],
     )
     async def test_get_rejects_invalid_video_id(
@@ -201,11 +200,18 @@ class TestDiskCacheVideoIdValidation:
         with pytest.raises(ValueError, match="Invalid video_id"):
             await disk_cache.get(bad_id)
 
+    @pytest.mark.parametrize(
+        "valid_id",
+        [
+            "dQw4w9WgXcQ",  # YouTube 11-char ID
+            "sc_artist_track-name",  # SoundCloud slug
+            "a" * 64,  # max length
+        ],
+    )
     async def test_put_accepts_valid_video_id(
-        self, disk_cache: DiskCache, source_file: Path
+        self, disk_cache: DiskCache, source_file: Path, valid_id: str
     ) -> None:
-        # Valid 11-char alphanumeric+dash+underscore id
-        result = await disk_cache.put("dQw4w9WgXcQ", source_file)
+        result = await disk_cache.put(valid_id, source_file)
         assert result.exists()
 
 

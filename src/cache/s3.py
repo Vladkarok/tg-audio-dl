@@ -21,7 +21,7 @@ from src.cache.base import CacheBackend
 logger = logging.getLogger(__name__)
 
 _S3_KEY_PREFIX = "audio/"
-_VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_\-]{11}$")
+_VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
 
 def _s3_key(video_id: str) -> str:

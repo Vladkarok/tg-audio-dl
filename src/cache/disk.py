@@ -15,15 +15,15 @@ CHUNK_SIZE = 256 * 1024  # 256 KB
 
 logger = logging.getLogger(__name__)
 
-# Strict 11-character YouTube video ID: alphanumeric, hyphen, underscore only.
-_VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
+# YouTube 11-char IDs, SoundCloud numeric IDs, and sc_slug cache keys (up to 64 chars).
+_VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
 
 def _validate_video_id(video_id: str) -> None:
     """Raise ValueError if video_id does not match the expected pattern."""
     if not _VIDEO_ID_RE.match(video_id):
         raise ValueError(
-            f"Invalid video_id {video_id!r}: must match ^[A-Za-z0-9_-]{{11}}$"
+            f"Invalid video_id {video_id!r}: must match ^[A-Za-z0-9_-]{{1,64}}$"
         )
 
 
@@ -48,9 +48,6 @@ class DiskCache(CacheBackend):
 
     def _fid_path(self, video_id: str) -> Path:
         return self.cache_dir / f"{video_id}.fid"
-
-    def _validate_video_id(self, video_id: str) -> None:
-        _validate_video_id(video_id)
 
     def _ensure_cache_dir(self) -> None:
         self.cache_dir.mkdir(parents=True, exist_ok=True)
