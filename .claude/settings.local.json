@@ -1,0 +1,26 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "Bash(uv init:*)",
+      "Bash(/home/vladkarok/.local/bin/uv --version)",
+      "Read(//home/vladkarok/**)",
+      "Read(//usr/**)",
+      "Read(//opt/**)",
+      "Bash(curl:*)",
+      "Bash(/home/vladkarok/.local/bin/uv python:*)",
+      "Bash(/home/vladkarok/.local/bin/uv run:*)",
+      "Bash(uv run:*)",
+      "Bash(python:*)",
+      "Bash(python3:*)",
+      "Bash(sleep:*)",
+      "Bash(docker compose:*)",
+      "Bash(docker exec:*)",
+      "Bash(sudo chown:*)",
+      "Bash(git init:*)",
+      "Bash(git:*)",
+      "Bash(gh api:*)",
+      "Bash(ls:*)"
+    ]
+  }
+}

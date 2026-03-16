@@ -2,7 +2,7 @@
 
 from unittest.mock import MagicMock
 
-from src.bot.filters import YouTubeURLFilter
+from src.bot.filters import MediaURLFilter, YouTubeURLFilter
 
 
 def make_message(text):
@@ -53,3 +53,34 @@ class TestYouTubeURLFilter:
             "https://www.youtube.com/playlist?list=PLrEnWoR732-BHrPp_Pm8_VleD68f9s14-"
         )
         assert self.f.filter(msg) is True
+
+    def test_filter_matches_soundcloud_track(self):
+        msg = make_message("https://soundcloud.com/rick-astley/never-gonna-give-you-up")
+        assert self.f.filter(msg) is True
+
+    def test_filter_matches_soundcloud_set(self):
+        msg = make_message("https://soundcloud.com/rick-astley/sets/greatest-hits")
+        assert self.f.filter(msg) is True
+
+    def test_filter_matches_on_soundcloud_short_url(self):
+        msg = make_message("https://on.soundcloud.com/AbCdEf123")
+        assert self.f.filter(msg) is True
+
+
+class TestMediaURLFilter:
+    """MediaURLFilter is the canonical name; YouTubeURLFilter is the legacy alias."""
+
+    def setup_method(self):
+        self.f = MediaURLFilter()
+
+    def test_matches_youtube(self):
+        msg = make_message("https://www.youtube.com/watch?v=dQw4w9WgXcQ")
+        assert self.f.filter(msg) is True
+
+    def test_matches_soundcloud(self):
+        msg = make_message("https://soundcloud.com/artist/track")
+        assert self.f.filter(msg) is True
+
+    def test_rejects_unrelated(self):
+        msg = make_message("https://vimeo.com/123")
+        assert self.f.filter(msg) is False

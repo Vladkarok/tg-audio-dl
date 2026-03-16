@@ -5,7 +5,7 @@ Progress hooks are bridged from yt-dlp's sync callback to an async callback via
 asyncio.run_coroutine_threadsafe.
 
 Security notes:
-- video_id is validated against the same regex used by url_parser before use.
+- track_id (cache key) is validated against _TRACK_ID_RE before use.
 - Output template uses %(id)s — yt-dlp controls the filename; no user input
   reaches the filesystem path directly.
 - URLs are passed to YoutubeDL() Python API only; never to a shell subprocess.
@@ -22,13 +22,17 @@ from pathlib import Path
 
 import yt_dlp
 
-from src.downloader.url_parser import ParsedURL, URLType
+from src.downloader.url_parser import ParsedURL, Platform, URLType
 
 # ---------------------------------------------------------------------------
 # Public data models
 # ---------------------------------------------------------------------------
 
-_VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
+# Accepts YouTube 11-char IDs, SoundCloud numeric IDs, and sc_slug cache keys
+_TRACK_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+
+# Keep for download_single() which is YouTube-only
+_YT_VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
 
 
 @dataclass(frozen=True)
@@ -92,7 +96,7 @@ ProgressCallback = Callable[[DownloadProgress], Awaitable[None]]
 
 
 class AudioDownloader:
-    """Async wrapper around yt-dlp for downloading YouTube audio."""
+    """Async wrapper around yt-dlp for downloading YouTube and SoundCloud audio."""
 
     def __init__(self, download_dir: Path, max_file_size_bytes: int) -> None:
         self._download_dir = download_dir
@@ -122,11 +126,23 @@ class AudioDownloader:
                 parsed_url.canonical_url, max_tracks, progress_callback, loop
             )
 
-        # SINGLE or RADIO_MIX — both treated as a single video download
-        video_id = parsed_url.video_id
+        # SINGLE or RADIO_MIX
+        # For YouTube: video_id is the 11-char yt ID — used for both file
+        #   lookup and as the cache key.
+        # For SoundCloud: video_id is our sc_slug cache key; yt-dlp uses its
+        #   own numeric ID for the file — so we pass yt_id=None (unknown) and
+        #   cache_id=sc_slug so _build_result uses the slug as the result key.
+        if parsed_url.platform == Platform.SOUNDCLOUD:
+            yt_id = None  # yt-dlp will use the numeric SC track ID for the file
+            cache_id = parsed_url.video_id  # sc_slug or None for short URLs
+        else:
+            yt_id = parsed_url.video_id  # YouTube 11-char ID
+            cache_id = None  # use yt-dlp's ID (same thing)
+
         result = await self._download_one(
             url=parsed_url.canonical_url,
-            video_id=video_id,
+            yt_id=yt_id,
+            cache_id=cache_id,
             noplaylist=True,
             progress_callback=progress_callback,
             loop=loop,
@@ -138,11 +154,11 @@ class AudioDownloader:
         video_id: str,
         progress_callback: ProgressCallback | None = None,
     ) -> DownloadResult:
-        """Download a single video by its 11-character video ID.
+        """Download a single YouTube video by its 11-character video ID.
 
         Raises DownloadError if video_id is invalid.
         """
-        if not _VIDEO_ID_RE.match(video_id):
+        if not _YT_VIDEO_ID_RE.match(video_id):
             raise DownloadError(
                 f"Invalid video_id {video_id!r}: must be 11 URL-safe base64 characters"
             )
@@ -151,7 +167,8 @@ class AudioDownloader:
         url = f"https://www.youtube.com/watch?v={video_id}"
         return await self._download_one(
             url=url,
-            video_id=video_id,
+            yt_id=video_id,
+            cache_id=None,
             noplaylist=True,
             progress_callback=progress_callback,
             loop=loop,
@@ -164,12 +181,19 @@ class AudioDownloader:
     async def _download_one(
         self,
         url: str,
-        video_id: str | None,
+        yt_id: str | None,
+        cache_id: str | None,
         noplaylist: bool,
         progress_callback: ProgressCallback | None,
         loop: asyncio.AbstractEventLoop,
     ) -> DownloadResult:
-        """Run yt-dlp for a single video URL and return a DownloadResult."""
+        """Run yt-dlp for a single URL and return a DownloadResult.
+
+        yt_id    — yt-dlp's expected track ID (used for cleanup on error).
+                   None for SoundCloud where the numeric ID is unknown pre-download.
+        cache_id — override for the result's video_id (our cache key).
+                   None means use whatever yt-dlp returns as info['id'].
+        """
         ydl_opts = self._build_opts(
             noplaylist=noplaylist,
             progress_callback=progress_callback,
@@ -179,10 +203,10 @@ class AudioDownloader:
         try:
             info = await asyncio.to_thread(self._run_ydl, ydl_opts, url)
         except VideoUnavailableError:
-            self._cleanup_partials(video_id)
+            self._cleanup_partials(yt_id)
             raise
 
-        return self._build_result(info)
+        return self._build_result(info, cache_id=cache_id)
 
     async def _download_playlist(
         self,
@@ -230,22 +254,32 @@ class AudioDownloader:
     # DownloadResult construction
     # ------------------------------------------------------------------
 
-    def _build_result(self, info: dict) -> DownloadResult:
-        """Build a DownloadResult from a yt-dlp info_dict."""
-        video_id = info.get("id", "")
-        if not _VIDEO_ID_RE.fullmatch(video_id):
-            raise DownloadError(f"yt-dlp returned unexpected video id: {video_id!r}")
-        file_path = self._find_audio_file(video_id)
+    def _build_result(self, info: dict, cache_id: str | None = None) -> DownloadResult:
+        """Build a DownloadResult from a yt-dlp info_dict.
+
+        cache_id — if provided, used as result.video_id (our cache key).
+                   The yt-dlp info['id'] is still used to locate the file on disk.
+        """
+        ydl_id = info.get("id", "")
+        # Validate yt-dlp's ID first — it is used for filesystem operations
+        if not _TRACK_ID_RE.fullmatch(ydl_id):
+            raise DownloadError(f"yt-dlp returned unexpected video id: {ydl_id!r}")
+
+        # File on disk always uses yt-dlp's own ID
+        file_path = self._find_audio_file(ydl_id)
         file_size = file_path.stat().st_size
 
         if file_size > self._max_file_size_bytes:
             raise FileTooLargeError(file_size, self._max_file_size_bytes)
 
+        # The result's video_id is the cache key: caller override or yt-dlp ID
+        result_id = cache_id if cache_id is not None else ydl_id
+
         artist = info.get("uploader") or info.get("channel") or None
 
         return DownloadResult(
             file_path=file_path,
-            video_id=video_id,
+            video_id=result_id,
             title=info["title"],
             artist=artist,
             duration_seconds=info.get("duration"),
@@ -253,22 +287,19 @@ class AudioDownloader:
             file_size_bytes=file_size,
         )
 
-    def _find_audio_file(self, video_id: str) -> Path:
-        """Locate the downloaded audio file for *video_id* in download_dir."""
-        # Prefer .m4a; fall back to any extension yt-dlp may have produced
+    def _find_audio_file(self, ydl_id: str) -> Path:
+        """Locate the downloaded audio file for *ydl_id* in download_dir."""
         for ext in ("m4a", "webm", "opus", "mp3", "ogg"):
-            candidate = self._download_dir / f"{video_id}.{ext}"
+            candidate = self._download_dir / f"{ydl_id}.{ext}"
             if candidate.exists():
                 return candidate
 
-        # Last resort: any file whose stem is the video_id
-        matches = list(self._download_dir.glob(f"{video_id}.*"))
+        matches = list(self._download_dir.glob(f"{ydl_id}.*"))
         if matches:
             return matches[0]
 
         raise DownloadError(
-            f"Downloaded file not found for video_id={video_id!r} "
-            f"in {self._download_dir}"
+            f"Downloaded file not found for id={ydl_id!r} in {self._download_dir}"
         )
 
     # ------------------------------------------------------------------
@@ -340,10 +371,10 @@ class AudioDownloader:
     # Cleanup helpers
     # ------------------------------------------------------------------
 
-    def _cleanup_partials(self, video_id: str | None) -> None:
-        """Remove any partial files for *video_id* from download_dir."""
-        if not video_id:
+    def _cleanup_partials(self, yt_id: str | None) -> None:
+        """Remove any partial files for *yt_id* from download_dir."""
+        if not yt_id:
             return
-        for path in self._download_dir.glob(f"{video_id}.*"):
+        for path in self._download_dir.glob(f"{yt_id}.*"):
             with contextlib.suppress(OSError):
                 path.unlink(missing_ok=True)

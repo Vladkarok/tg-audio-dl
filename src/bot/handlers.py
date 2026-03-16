@@ -25,7 +25,7 @@ from src.downloader.client import (
     FileTooLargeError,
     VideoUnavailableError,
 )
-from src.downloader.url_parser import extract_youtube_urls
+from src.downloader.url_parser import extract_media_urls
 from src.utils.sanitize import clean_title, sanitize_filename
 
 logger = logging.getLogger(__name__)
@@ -64,12 +64,16 @@ _WELCOME_TEXT = (
 )
 
 _HELP_TEXT = (
-    "Send a YouTube video link or playlist URL.\n\n"
-    "Supported formats:\n"
+    "Send a YouTube or SoundCloud link and I'll download the audio.\n\n"
+    "YouTube:\n"
     "• https://www.youtube.com/watch?v=...\n"
     "• https://youtu.be/...\n"
     "• https://www.youtube.com/shorts/...\n"
-    "• https://www.youtube.com/playlist?list=...\n"
+    "• https://www.youtube.com/playlist?list=...\n\n"
+    "SoundCloud:\n"
+    "• https://soundcloud.com/artist/track\n"
+    "• https://soundcloud.com/artist/sets/playlist\n"
+    "• https://on.soundcloud.com/...\n"
 )
 
 
@@ -109,7 +113,7 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         return
 
     # --- Parse URL --------------------------------------------------------
-    parsed_urls = extract_youtube_urls(text)
+    parsed_urls = extract_media_urls(text)
     if not parsed_urls:
         return  # silently ignore non-YouTube messages
 

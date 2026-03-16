@@ -11,8 +11,11 @@ import pytest
 
 from src.downloader.url_parser import (
     ParsedURL,
+    Platform,
     URLType,
+    extract_media_urls,
     extract_youtube_urls,
+    parse_soundcloud_url,
     parse_youtube_url,
 )
 
@@ -586,3 +589,180 @@ class TestExtractYouTubeURLs:
         results = extract_youtube_urls(text)
         assert len(results) == 1
         assert results[0].canonical_url == canonical_single(VIDEO_ID)
+
+
+# ===========================================================================
+# Platform enum
+# ===========================================================================
+
+
+class TestPlatformEnum:
+    def test_youtube_enum_exists(self):
+        assert Platform.YOUTUBE is not None
+
+    def test_soundcloud_enum_exists(self):
+        assert Platform.SOUNDCLOUD is not None
+
+    def test_parsed_youtube_url_has_youtube_platform(self):
+        result = parse_youtube_url(f"https://www.youtube.com/watch?v={VIDEO_ID}")
+        assert result.platform == Platform.YOUTUBE
+
+
+# ===========================================================================
+# parse_soundcloud_url
+# ===========================================================================
+
+
+SC_ARTIST = "rick-astley"
+SC_TRACK = "never-gonna-give-you-up"
+SC_SET = "greatest-hits"
+
+
+class TestParseSoundCloudURL:
+    """parse_soundcloud_url returns ParsedURL | None."""
+
+    def test_returns_parsed_url_for_track(self):
+        url = f"https://soundcloud.com/{SC_ARTIST}/{SC_TRACK}"
+        result = parse_soundcloud_url(url)
+        assert isinstance(result, ParsedURL)
+
+    def test_returns_none_for_non_sc_url(self):
+        assert parse_soundcloud_url("https://youtube.com/watch?v=abc") is None
+
+    def test_returns_none_for_empty_string(self):
+        assert parse_soundcloud_url("") is None
+
+    def test_returns_none_for_artist_page_only(self):
+        assert parse_soundcloud_url(f"https://soundcloud.com/{SC_ARTIST}") is None
+
+    def test_never_raises_on_garbage(self):
+        for bad in ["not a url", "://broken", None, "   ", "http://"]:
+            assert parse_soundcloud_url(bad) is None  # type: ignore[arg-type]
+
+
+class TestParseSoundCloudSingle:
+    def test_url_type_is_single(self):
+        result = parse_soundcloud_url(f"https://soundcloud.com/{SC_ARTIST}/{SC_TRACK}")
+        assert result.url_type == URLType.SINGLE
+
+    def test_platform_is_soundcloud(self):
+        result = parse_soundcloud_url(f"https://soundcloud.com/{SC_ARTIST}/{SC_TRACK}")
+        assert result.platform == Platform.SOUNDCLOUD
+
+    def test_video_id_is_sc_prefixed_slug(self):
+        result = parse_soundcloud_url(f"https://soundcloud.com/{SC_ARTIST}/{SC_TRACK}")
+        assert result.video_id is not None
+        assert result.video_id.startswith("sc_")
+
+    def test_video_id_contains_artist_and_track(self):
+        result = parse_soundcloud_url(f"https://soundcloud.com/{SC_ARTIST}/{SC_TRACK}")
+        assert (
+            SC_ARTIST in result.video_id
+            or SC_ARTIST.replace("-", "_") in result.video_id
+        )
+
+    def test_video_id_max_64_chars(self):
+        long_artist = "a" * 40
+        long_track = "b" * 40
+        result = parse_soundcloud_url(
+            f"https://soundcloud.com/{long_artist}/{long_track}"
+        )
+        assert len(result.video_id) <= 64
+
+    def test_video_id_safe_chars_only(self):
+        import re
+
+        result = parse_soundcloud_url(f"https://soundcloud.com/{SC_ARTIST}/{SC_TRACK}")
+        assert re.fullmatch(r"[A-Za-z0-9_-]{1,64}", result.video_id)
+
+    def test_canonical_url_is_original(self):
+        url = f"https://soundcloud.com/{SC_ARTIST}/{SC_TRACK}"
+        result = parse_soundcloud_url(url)
+        assert result.canonical_url == url
+
+    def test_www_prefix_accepted(self):
+        url = f"https://www.soundcloud.com/{SC_ARTIST}/{SC_TRACK}"
+        result = parse_soundcloud_url(url)
+        assert result is not None
+        assert result.url_type == URLType.SINGLE
+
+    def test_non_track_paths_rejected(self):
+        for path in ("likes", "reposts", "followers", "following", "tracks", "albums"):
+            url = f"https://soundcloud.com/{SC_ARTIST}/{path}"
+            assert parse_soundcloud_url(url) is None, f"expected None for /{path}"
+
+
+class TestParseSoundCloudPlaylist:
+    def test_sets_url_type_is_playlist(self):
+        url = f"https://soundcloud.com/{SC_ARTIST}/sets/{SC_SET}"
+        result = parse_soundcloud_url(url)
+        assert result.url_type == URLType.PLAYLIST
+
+    def test_sets_video_id_is_none(self):
+        url = f"https://soundcloud.com/{SC_ARTIST}/sets/{SC_SET}"
+        result = parse_soundcloud_url(url)
+        assert result.video_id is None
+
+    def test_sets_platform_is_soundcloud(self):
+        url = f"https://soundcloud.com/{SC_ARTIST}/sets/{SC_SET}"
+        result = parse_soundcloud_url(url)
+        assert result.platform == Platform.SOUNDCLOUD
+
+    def test_sets_playlist_id_contains_slug(self):
+        url = f"https://soundcloud.com/{SC_ARTIST}/sets/{SC_SET}"
+        result = parse_soundcloud_url(url)
+        assert result.playlist_id is not None
+
+
+class TestParseSoundCloudShortURL:
+    def test_on_soundcloud_returns_single(self):
+        result = parse_soundcloud_url("https://on.soundcloud.com/AbCdEf")
+        assert result is not None
+        assert result.url_type == URLType.SINGLE
+        assert result.platform == Platform.SOUNDCLOUD
+
+    def test_on_soundcloud_video_id_is_none(self):
+        result = parse_soundcloud_url("https://on.soundcloud.com/AbCdEf")
+        assert result.video_id is None
+
+
+# ===========================================================================
+# extract_media_urls — combined YouTube + SoundCloud
+# ===========================================================================
+
+
+class TestExtractMediaURLs:
+    def test_extracts_youtube_url(self):
+        text = f"https://www.youtube.com/watch?v={VIDEO_ID}"
+        results = extract_media_urls(text)
+        assert len(results) == 1
+        assert results[0].platform == Platform.YOUTUBE
+
+    def test_extracts_soundcloud_url(self):
+        text = f"https://soundcloud.com/{SC_ARTIST}/{SC_TRACK}"
+        results = extract_media_urls(text)
+        assert len(results) == 1
+        assert results[0].platform == Platform.SOUNDCLOUD
+
+    def test_extracts_both_in_one_message(self):
+        text = (
+            f"YT: https://www.youtube.com/watch?v={VIDEO_ID} "
+            f"SC: https://soundcloud.com/{SC_ARTIST}/{SC_TRACK}"
+        )
+        results = extract_media_urls(text)
+        assert len(results) == 2
+        platforms = {r.platform for r in results}
+        assert Platform.YOUTUBE in platforms
+        assert Platform.SOUNDCLOUD in platforms
+
+    def test_empty_text_returns_empty(self):
+        assert extract_media_urls("") == []
+
+    def test_unrelated_url_returns_empty(self):
+        assert extract_media_urls("https://google.com") == []
+
+    def test_soundcloud_playlist_extracted(self):
+        text = f"https://soundcloud.com/{SC_ARTIST}/sets/{SC_SET}"
+        results = extract_media_urls(text)
+        assert len(results) == 1
+        assert results[0].url_type == URLType.PLAYLIST

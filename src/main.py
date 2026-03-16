@@ -7,7 +7,7 @@ from telegram.ext import (
     MessageHandler,
 )
 
-from src.bot.filters import YouTubeURLFilter
+from src.bot.filters import MediaURLFilter
 from src.bot.handlers import handle_help, handle_start, handle_url
 from src.cache import create_cache
 from src.config import get_settings
@@ -64,7 +64,7 @@ def build_application(settings) -> Application:
     # Register handlers
     app.add_handler(CommandHandler("start", handle_start))
     app.add_handler(CommandHandler("help", handle_help))
-    app.add_handler(MessageHandler(YouTubeURLFilter(), handle_url))
+    app.add_handler(MessageHandler(MediaURLFilter(), handle_url))
 
     return app
 
