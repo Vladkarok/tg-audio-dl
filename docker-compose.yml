@@ -16,8 +16,8 @@ services:
     security_opt:
       - no-new-privileges:true
     # Note: cap_drop ALL omitted — this image needs CAP_CHOWN at startup to own its data dir
-    mem_limit: 2g
-    cpus: "1.0"
+    mem_limit: 256m
+    cpus: "0.5"
     tmpfs:
       - /tmp:size=256m,noexec,nosuid,nodev
     healthcheck:
@@ -28,6 +28,8 @@ services:
       start_period: 15s
 
   bot:
+    # Local dev: built from source. Production: pulled from GHCR via GHCR_IMAGE in .env
+    image: ${GHCR_IMAGE:-youtube-download-bot}
     build: .
     restart: unless-stopped
     depends_on:
@@ -48,8 +50,8 @@ services:
       - /tmp:size=512m,noexec,nosuid,nodev
     cap_drop:
       - ALL
-    mem_limit: 1g
-    cpus: "1.0"
+    mem_limit: 512m
+    cpus: "1.5"
     # No ports — bot only needs outbound connections
 
 networks:

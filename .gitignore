@@ -34,8 +34,8 @@ coverage.xml
 *.swp
 *.swo
 
-# Bot cache
-cache/
+# Bot cache (root-level download cache only, not src/cache/)
+/cache/
 *.m4a
 *.mp4
 *.webm

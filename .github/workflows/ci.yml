@@ -1,10 +1,14 @@
-name: CI
+name: CI/CD
 
 on:
   push:
-    branches: [main]
+    branches: [main, master]
+    tags: ["v*"]
   pull_request:
-    branches: [main]
+    branches: [main, master]
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   test:
@@ -45,3 +49,87 @@ jobs:
 
       - name: Ruff format check
         run: uv run ruff format --check src/ tests/
+
+  deploy:
+    name: Deploy to VPS
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: [test, lint]
+    permissions:
+      contents: read
+      packages: write  # push to GHCR
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set image vars
+        run: |
+          OWNER="${GITHUB_REPOSITORY_OWNER,,}"
+          TAG="${GITHUB_REF_NAME}"
+          BASE="ghcr.io/${OWNER}/youtube-download-bot"
+          echo "REPO_OWNER_LC=${OWNER}" >> $GITHUB_ENV
+          echo "IMAGE_TAG=${BASE}:${TAG}" >> $GITHUB_ENV
+          echo "IMAGE_LATEST=${BASE}:latest" >> $GITHUB_ENV
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ env.IMAGE_TAG }}
+            ${{ env.IMAGE_LATEST }}
+          platforms: linux/amd64
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Copy compose file to server
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          port: ${{ secrets.DEPLOY_PORT }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          source: docker-compose.yml
+          target: ~/youtube-download-bot/
+
+      - name: Deploy
+        uses: appleboy/ssh-action@v1.0.3
+        env:
+          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+          REPO_OWNER: ${{ env.REPO_OWNER_LC }}
+          GHCR_IMAGE: ${{ env.IMAGE_TAG }}
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          port: ${{ secrets.DEPLOY_PORT }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          envs: GHCR_TOKEN,REPO_OWNER,GHCR_IMAGE
+          script: |
+            set -e
+            cd ~/youtube-download-bot
+
+            # Authenticate to pull private image
+            echo "$GHCR_TOKEN" | docker login ghcr.io -u "$REPO_OWNER" --password-stdin
+
+            # Override image with the one just built in CI
+            export GHCR_IMAGE="$GHCR_IMAGE"
+
+            # Pull new bot image only (telegram-bot-api uses a pinned public image)
+            docker compose pull bot
+
+            # Restart bot with zero-downtime (api keeps running)
+            docker compose up -d --force-recreate bot
+
+            # Clean up dangling images to save disk
+            docker image prune -f

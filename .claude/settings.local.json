@@ -20,7 +20,8 @@
       "Bash(git init:*)",
       "Bash(git:*)",
       "Bash(gh api:*)",
-      "Bash(ls:*)"
+      "Bash(ls:*)",
+      "Bash(ssh your-server:*)"
     ]
   }
 }
