@@ -15,10 +15,7 @@ services:
     # No ports exposed to host — only internal network
     security_opt:
       - no-new-privileges:true
-    cap_drop:
-      - ALL
-    cap_add:
-      - CHOWN
+    # cap_drop: ALL not viable — third-party image needs unknown capabilities at startup
     mem_limit: 256m
     cpus: "0.5"
     tmpfs:
