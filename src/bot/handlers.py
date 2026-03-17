@@ -10,11 +10,12 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import io
 import logging
 import time
 from pathlib import Path
 
-from telegram import Bot, Message, Update
+from telegram import Bot, InputFile, Message, Update
 from telegram.ext import ContextTypes
 
 from src.bot.progress import ProgressManager, Step, StepStatus
@@ -285,6 +286,19 @@ async def _process_url(  # noqa: PLR0913
     await progress.delete()
 
 
+def _extract_thumbnail(file_path: Path) -> InputFile | None:
+    """Extract embedded cover art from an M4A file as an InputFile for Telegram."""
+    try:
+        from mutagen.mp4 import MP4
+
+        tags = MP4(file_path).tags
+        if tags and "covr" in tags and tags["covr"]:
+            return InputFile(io.BytesIO(bytes(tags["covr"][0])), filename="cover.jpg")
+    except Exception:
+        logger.debug("Could not extract thumbnail from %s", file_path)
+    return None
+
+
 async def _send_audio(
     bot: Bot, chat_id: int, result: DownloadResult, progress: ProgressManager
 ) -> Message:
@@ -292,11 +306,13 @@ async def _send_audio(
     await progress.set_step(Step.PROCESSING, StepStatus.DONE)
     display_title = clean_title(result.title) or result.video_id
     safe_filename = sanitize_filename(display_title) or result.video_id
+    thumbnail = _extract_thumbnail(result.file_path)
     await progress.start_upload_animation()
     with result.file_path.open("rb") as audio_file:
         msg = await bot.send_audio(
             chat_id=chat_id,
             audio=audio_file,
+            thumbnail=thumbnail,
             title=display_title,
             performer=result.artist,
             duration=result.duration_seconds,
