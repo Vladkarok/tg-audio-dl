@@ -229,11 +229,12 @@ async def _process_url(
         cached_path: Path | None = await cache.get(video_id)
         if cached_path is None:
             return
+        cached_title, cached_artist = _extract_m4a_metadata(cached_path)
         result = DownloadResult(
             file_path=cached_path,
             video_id=video_id,
-            title=video_id,
-            artist=None,
+            title=cached_title or video_id,
+            artist=cached_artist,
             duration_seconds=None,
             thumbnail_url=None,
             file_size_bytes=cached_path.stat().st_size,
@@ -309,6 +310,20 @@ async def _process_url(
     await progress.set_step(Step.UPLOADING, StepStatus.DONE)
     await asyncio.sleep(2)
     await progress.delete()
+
+
+def _extract_m4a_metadata(file_path: Path) -> tuple[str | None, str | None]:
+    """Extract title and artist from M4A tags. Returns (title, artist)."""
+    try:
+        tags = MP4(file_path).tags  # type: ignore[no-untyped-call]
+        if not tags:
+            return None, None
+        title = tags.get("\xa9nam", [None])[0]
+        artist = tags.get("\xa9ART", [None])[0]
+        return title, artist
+    except Exception:
+        logger.debug("Could not read M4A metadata from %s", file_path, exc_info=True)
+        return None, None
 
 
 def _extract_thumbnail(file_path: Path) -> InputFile | None:

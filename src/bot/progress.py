@@ -177,11 +177,14 @@ class ProgressManager:
             )
 
     async def delete(self) -> None:
-        """Delete the status message."""
+        """Stop all animations and delete the status message."""
+        for step in list(self._animation_tasks):
+            await self._stop_animation(step)
         if self._message_id is not None:
             await self._bot.delete_message(
                 chat_id=self._chat_id, message_id=self._message_id
             )
+            self._message_id = None
 
     def render(self) -> str:
         """Render current state to a message text string. Pure function, no I/O."""
