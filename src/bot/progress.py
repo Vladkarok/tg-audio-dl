@@ -33,7 +33,7 @@ class StepStatus(Enum):
 
 
 _STATUS_ICONS: dict[StepStatus, str] = {
-    StepStatus.PENDING: "⬜",
+    StepStatus.PENDING: "◻️",
     StepStatus.ACTIVE: "⏳",
     StepStatus.DONE: "✅",
     StepStatus.ERROR: "❌",

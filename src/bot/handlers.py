@@ -210,9 +210,19 @@ async def _process_url(
                 await progress.set_step(Step.PROCESSING, StepStatus.DONE)
                 await progress.set_step(Step.UPLOADING, StepStatus.ACTIVE)
                 await progress.start_upload_animation()
+                # Build caption with chapters for file_id resend
+                fid_chapters = await cache.get_chapters(video_id)
+                fid_path = await cache.get(video_id)
+                fid_title = video_id
+                if fid_path:
+                    t, _ = _extract_m4a_metadata(fid_path)
+                    if t:
+                        fid_title = clean_title(t) or video_id
+                fid_caption = _build_caption(fid_title, fid_chapters)
                 await context.bot.send_audio(
                     chat_id=update.message.chat_id,
                     audio=file_id,
+                    caption=fid_caption,
                     read_timeout=300,
                     write_timeout=300,
                 )
