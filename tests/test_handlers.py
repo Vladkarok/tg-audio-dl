@@ -6,7 +6,14 @@ from unittest.mock import AsyncMock, MagicMock, mock_open, patch
 
 import pytest
 
-from src.bot.handlers import _user_request_times, handle_help, handle_start, handle_url
+import src.bot.handlers as handlers_module
+from src.bot.handlers import (
+    _RATE_LIMIT_CLEANUP_INTERVAL,
+    _user_request_times,
+    handle_help,
+    handle_start,
+    handle_url,
+)
 from src.downloader.client import (
     DownloadError,
     DownloadResult,
@@ -472,3 +479,26 @@ class TestHandleUrlRateLimit:
             await handle_url(update, context)
 
         context.bot.send_audio.assert_called_once()
+
+    async def test_rate_limit_stale_entries_evicted(self):
+        """Stale rate-limit entries are cleaned up after N requests."""
+        now = time.monotonic()
+        # Fill with stale entries (all timestamps >60s ago)
+        for uid in range(200):
+            _user_request_times[uid] = [now - 120]
+
+        # Force cleanup by setting counter near threshold
+        handlers_module._rate_limit_request_count = _RATE_LIMIT_CLEANUP_INTERVAL - 1
+
+        update = make_update(user_id=99999)
+        context = make_context(rate_limit=5)
+
+        with (
+            patch("asyncio.sleep", new_callable=AsyncMock),
+            patch("pathlib.Path.open", mock_open(read_data=b"fake audio data")),
+        ):
+            await handle_url(update, context)
+
+        # All 200 stale entries should be evicted; only user 99999 remains
+        assert len(_user_request_times) == 1
+        assert 99999 in _user_request_times

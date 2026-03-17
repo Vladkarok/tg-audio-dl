@@ -23,6 +23,8 @@ def setup_logging(log_level: str) -> None:
     # Quiet noisy libraries
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("telegram").setLevel(logging.WARNING)
+    logging.getLogger("botocore").setLevel(logging.WARNING)
+    logging.getLogger("urllib3").setLevel(logging.WARNING)
 
 
 async def post_init(application: Application[Any, Any, Any, Any, Any, Any]) -> None:
@@ -77,6 +79,12 @@ def main() -> None:
 
     logger = logging.getLogger(__name__)
     logger.info("Starting YouTube Download Bot")
+
+    if not settings.ALLOWED_USER_IDS:
+        logger.warning(
+            "ALLOWED_USER_IDS is empty — bot will accept requests from ALL "
+            "Telegram users. Set ALLOWED_USER_IDS to restrict access."
+        )
 
     app = build_application(settings)
     app.run_polling(drop_pending_updates=True)

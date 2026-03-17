@@ -54,10 +54,16 @@ class S3Cache(CacheBackend):
             error_code = exc.response.get("Error", {}).get("Code", "")
             if error_code in ("404", "NoSuchKey"):
                 return None
-            logger.warning("S3Cache.get failed for %s: %s", video_id, exc)
+            error_msg = exc.response.get("Error", {}).get("Message", "")
+            logger.warning(
+                "S3Cache.get failed for %s: code=%s msg=%s",
+                video_id,
+                error_code,
+                error_msg,
+            )
             return None
-        except Exception as exc:
-            logger.warning("S3Cache.get failed for %s: %s", video_id, exc)
+        except Exception:
+            logger.warning("S3Cache.get failed for %s", video_id, exc_info=True)
             return None
 
     async def put(self, video_id: str, file_path: Path) -> Path:
@@ -70,8 +76,18 @@ class S3Cache(CacheBackend):
         try:
             await asyncio.to_thread(_upload)
             return file_path
-        except Exception as exc:
-            logger.warning("S3Cache.put failed for %s: %s", video_id, exc)
+        except ClientError as exc:
+            error_code = exc.response.get("Error", {}).get("Code", "")
+            error_msg = exc.response.get("Error", {}).get("Message", "")
+            logger.warning(
+                "S3Cache.put failed for %s: code=%s msg=%s",
+                video_id,
+                error_code,
+                error_msg,
+            )
+            return file_path
+        except Exception:
+            logger.warning("S3Cache.put failed for %s", video_id, exc_info=True)
             return file_path
 
     async def exists(self, video_id: str) -> bool:
@@ -87,10 +103,16 @@ class S3Cache(CacheBackend):
             error_code = exc.response.get("Error", {}).get("Code", "")
             if error_code in ("404", "NoSuchKey"):
                 return False
-            logger.warning("S3Cache.exists failed for %s: %s", video_id, exc)
+            error_msg = exc.response.get("Error", {}).get("Message", "")
+            logger.warning(
+                "S3Cache.exists failed for %s: code=%s msg=%s",
+                video_id,
+                error_code,
+                error_msg,
+            )
             return False
-        except Exception as exc:
-            logger.warning("S3Cache.exists failed for %s: %s", video_id, exc)
+        except Exception:
+            logger.warning("S3Cache.exists failed for %s", video_id, exc_info=True)
             return False
 
     async def evict(self, video_id: str) -> None:
@@ -101,8 +123,17 @@ class S3Cache(CacheBackend):
 
         try:
             await asyncio.to_thread(_delete)
-        except Exception as exc:
-            logger.warning("S3Cache.evict failed for %s: %s", video_id, exc)
+        except ClientError as exc:
+            error_code = exc.response.get("Error", {}).get("Code", "")
+            error_msg = exc.response.get("Error", {}).get("Message", "")
+            logger.warning(
+                "S3Cache.evict failed for %s: code=%s msg=%s",
+                video_id,
+                error_code,
+                error_msg,
+            )
+        except Exception:
+            logger.warning("S3Cache.evict failed for %s", video_id, exc_info=True)
 
     async def get_file_id(self, video_id: str) -> str | None:
         """file_ids are local to a single bot instance — not stored in S3."""
@@ -122,6 +153,15 @@ class S3Cache(CacheBackend):
 
         try:
             return await asyncio.to_thread(_sum_sizes)
-        except Exception as exc:
-            logger.warning("S3Cache.total_size_bytes failed: %s", exc)
+        except ClientError as exc:
+            error_code = exc.response.get("Error", {}).get("Code", "")
+            error_msg = exc.response.get("Error", {}).get("Message", "")
+            logger.warning(
+                "S3Cache.total_size_bytes failed: code=%s msg=%s",
+                error_code,
+                error_msg,
+            )
+            return 0
+        except Exception:
+            logger.warning("S3Cache.total_size_bytes failed", exc_info=True)
             return 0

@@ -117,7 +117,8 @@ class TestCompositeCachePut:
         result = await cache.put("dQw4w9WgXcQ", source_file)
 
         disk.put.assert_called_once_with("dQw4w9WgXcQ", source_file)
-        s3.put.assert_called_once_with("dQw4w9WgXcQ", source_file)
+        # S3 receives disk_path (not original file_path) because disk.put may rename
+        s3.put.assert_called_once_with("dQw4w9WgXcQ", cached_disk_path)
         # Returns the disk path
         assert result == cached_disk_path
 

@@ -227,7 +227,7 @@ def parse_youtube_url(raw_url: str) -> ParsedURL | None:
         and not video_id
         and _is_valid_playlist_id(list_id)
     )
-    if is_playlist:
+    if is_playlist and list_id is not None:
         return ParsedURL(
             url_type=URLType.PLAYLIST,
             video_id=None,
