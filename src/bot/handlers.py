@@ -25,6 +25,7 @@ from src.cache.base import CacheBackend
 from src.config import Settings
 from src.downloader.client import (
     AudioDownloader,
+    Chapter,
     DownloadError,
     DownloadProgress,
     DownloadResult,
@@ -229,7 +230,9 @@ async def _process_url(
         cached_path: Path | None = await cache.get(video_id)
         if cached_path is None:
             return
-        cached_title, cached_artist = _extract_m4a_metadata(cached_path)
+        cached_title, cached_artist, cached_chapters = _extract_m4a_metadata(
+            cached_path
+        )
         result = DownloadResult(
             file_path=cached_path,
             video_id=video_id,
@@ -238,6 +241,7 @@ async def _process_url(
             duration_seconds=None,
             thumbnail_url=None,
             file_size_bytes=cached_path.stat().st_size,
+            chapters=cached_chapters,
         )
         msg = await _send_audio(context.bot, update.message.chat_id, result, progress)
         if msg.audio:
@@ -312,18 +316,87 @@ async def _process_url(
     await progress.delete()
 
 
-def _extract_m4a_metadata(file_path: Path) -> tuple[str | None, str | None]:
-    """Extract title and artist from M4A tags. Returns (title, artist)."""
+def _extract_m4a_metadata(
+    file_path: Path,
+) -> tuple[str | None, str | None, tuple[Chapter, ...] | None]:
+    """Extract title, artist, and chapters from M4A tags.
+
+    Returns (title, artist, chapters).
+    """
     try:
-        tags = MP4(file_path).tags  # type: ignore[no-untyped-call]
-        if not tags:
-            return None, None
-        title = tags.get("\xa9nam", [None])[0]
-        artist = tags.get("\xa9ART", [None])[0]
-        return title, artist
+        audio = MP4(file_path)  # type: ignore[no-untyped-call]
+        tags = audio.tags
+        title = tags.get("\xa9nam", [None])[0] if tags else None
+        artist = tags.get("\xa9ART", [None])[0] if tags else None
+
+        chapters: tuple[Chapter, ...] | None = None
+        if hasattr(audio, "chapters") and audio.chapters:
+            chapters = (
+                tuple(
+                    (int(ch.start), ch.title)
+                    for ch in audio.chapters
+                    if hasattr(ch, "start") and hasattr(ch, "title")
+                )
+                or None
+            )
+
+        return title, artist, chapters
     except Exception:
         logger.debug("Could not read M4A metadata from %s", file_path, exc_info=True)
-        return None, None
+        return None, None, None
+
+
+# ---------------------------------------------------------------------------
+# Caption formatting
+# ---------------------------------------------------------------------------
+
+
+def _format_timestamp(seconds: int) -> str:
+    """Format seconds as HH:MM:SS."""
+    h, remainder = divmod(seconds, 3600)
+    m, s = divmod(remainder, 60)
+    return f"{h:02d}:{m:02d}:{s:02d}"
+
+
+def _build_caption(
+    title: str,
+    chapters: tuple[Chapter, ...] | None,
+    max_length: int = 1024,
+) -> str:
+    """Build a Telegram caption with title and optional chapter timestamps.
+
+    Truncates chapter list from the bottom if it exceeds *max_length*,
+    appending '...' as indicator.
+    """
+    title_line = f"🎵 {title}"
+    if not chapters:
+        return title_line[:max_length]
+
+    chapter_lines = [f"{_format_timestamp(start)} {label}" for start, label in chapters]
+
+    full = title_line + "\n\n" + "\n".join(chapter_lines)
+    if len(full) <= max_length:
+        return full
+
+    # Truncate: drop chapters from the bottom, add "..." suffix
+    suffix = "\n..."
+    base = title_line + "\n\n"
+    available = max_length - len(base) - len(suffix)
+
+    included: list[str] = []
+    used = 0
+    for line in chapter_lines:
+        needed = len(line) + (1 if included else 0)  # +1 for \n separator
+        if used + needed > available:
+            break
+        used += needed
+        included.append(line)
+
+    # Show at least 2 chapters or fall back to title only
+    if len(included) < 2:
+        return title_line[:max_length]
+
+    return base + "\n".join(included) + suffix
 
 
 def _extract_thumbnail(file_path: Path) -> InputFile | None:
@@ -356,7 +429,7 @@ async def _send_audio(
             title=display_title,
             performer=result.artist,
             duration=result.duration_seconds,
-            caption=f"🎵 {display_title}",
+            caption=_build_caption(display_title, result.chapters),
             filename=f"{safe_filename}.m4a",
             read_timeout=300,
             write_timeout=300,

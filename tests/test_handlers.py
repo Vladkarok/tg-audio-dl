@@ -9,6 +9,8 @@ import pytest
 import src.bot.handlers as handlers_module
 from src.bot.handlers import (
     _RATE_LIMIT_CLEANUP_INTERVAL,
+    _build_caption,
+    _format_timestamp,
     _user_request_times,
     handle_help,
     handle_start,
@@ -502,3 +504,66 @@ class TestHandleUrlRateLimit:
         # All 200 stale entries should be evicted; only user 99999 remains
         assert len(_user_request_times) == 1
         assert 99999 in _user_request_times
+
+
+# ---------------------------------------------------------------------------
+# Caption formatting
+# ---------------------------------------------------------------------------
+
+
+class TestFormatTimestamp:
+    def test_zero(self):
+        assert _format_timestamp(0) == "00:00:00"
+
+    def test_seconds_only(self):
+        assert _format_timestamp(45) == "00:00:45"
+
+    def test_minutes_and_seconds(self):
+        assert _format_timestamp(125) == "00:02:05"
+
+    def test_hours(self):
+        assert _format_timestamp(3661) == "01:01:01"
+
+    def test_large_value(self):
+        assert _format_timestamp(86399) == "23:59:59"
+
+
+class TestBuildCaption:
+    def test_no_chapters(self):
+        result = _build_caption("My Song", None)
+        assert result == "🎵 My Song"
+
+    def test_empty_chapters(self):
+        result = _build_caption("My Song", ())
+        assert result == "🎵 My Song"
+
+    def test_with_chapters(self):
+        chapters = ((0, "Intro"), (60, "Verse"), (180, "Chorus"))
+        result = _build_caption("My Song", chapters)
+        assert result == (
+            "🎵 My Song\n\n00:00:00 Intro\n00:01:00 Verse\n00:03:00 Chorus"
+        )
+
+    def test_truncation_at_limit(self):
+        chapters = tuple((i * 60, f"Chapter {i + 1}") for i in range(100))
+        result = _build_caption("Title", chapters, max_length=200)
+        assert len(result) <= 200
+        assert result.endswith("\n...")
+
+    def test_truncation_preserves_title(self):
+        chapters = tuple((i * 60, f"Chapter {i + 1}") for i in range(100))
+        result = _build_caption("Title", chapters, max_length=200)
+        assert result.startswith("🎵 Title")
+
+    def test_title_only_if_fewer_than_two_chapters_fit(self):
+        """If only 0–1 chapter lines fit, show title only."""
+        chapters = ((0, "A" * 100), (60, "B" * 100))
+        result = _build_caption("Title", chapters, max_length=50)
+        assert result == "🎵 Title"
+        assert "\n" not in result
+
+    def test_never_exceeds_max_length(self):
+        chapters = tuple((i * 60, f"Long chapter name {i}") for i in range(50))
+        for limit in [100, 200, 500, 1024]:
+            result = _build_caption("A Title", chapters, max_length=limit)
+            assert len(result) <= limit

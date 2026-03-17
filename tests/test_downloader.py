@@ -918,3 +918,54 @@ class TestCleanupPartialsOSErrorSwallowed:
             pytest.raises(VideoUnavailableError),
         ):
             await downloader.download(_make_parsed_single())
+
+
+# ---------------------------------------------------------------------------
+# Chapter extraction
+# ---------------------------------------------------------------------------
+
+
+class TestChapterExtraction:
+    async def test_chapters_extracted_from_info(self, tmp_path: Path) -> None:
+        """yt-dlp info with chapters populates DownloadResult.chapters."""
+        info = {
+            **FAKE_SINGLE_INFO,
+            "chapters": [
+                {"start_time": 0.0, "end_time": 60.0, "title": "Intro"},
+                {"start_time": 60.0, "end_time": 180.0, "title": "Verse 1"},
+                {"start_time": 180.0, "end_time": 213.0, "title": "Chorus"},
+            ],
+        }
+        _create_fake_m4a(tmp_path, VIDEO_ID)
+        downloader = AudioDownloader(tmp_path, max_file_size_bytes=10**9)
+        ydl_mock = _make_ydl_mock(info)
+
+        with patch("src.downloader.client.yt_dlp.YoutubeDL", return_value=ydl_mock):
+            results = await downloader.download(_make_parsed_single())
+
+        assert results[0].chapters == ((0, "Intro"), (60, "Verse 1"), (180, "Chorus"))
+
+    async def test_chapters_none_when_absent(self, tmp_path: Path) -> None:
+        """Info without chapters key produces chapters=None."""
+        info = {**FAKE_SINGLE_INFO}
+        info.pop("chapters", None)
+        _create_fake_m4a(tmp_path, VIDEO_ID)
+        downloader = AudioDownloader(tmp_path, max_file_size_bytes=10**9)
+        ydl_mock = _make_ydl_mock(info)
+
+        with patch("src.downloader.client.yt_dlp.YoutubeDL", return_value=ydl_mock):
+            results = await downloader.download(_make_parsed_single())
+
+        assert results[0].chapters is None
+
+    async def test_chapters_none_when_empty_list(self, tmp_path: Path) -> None:
+        """Info with chapters=[] produces chapters=None."""
+        info = {**FAKE_SINGLE_INFO, "chapters": []}
+        _create_fake_m4a(tmp_path, VIDEO_ID)
+        downloader = AudioDownloader(tmp_path, max_file_size_bytes=10**9)
+        ydl_mock = _make_ydl_mock(info)
+
+        with patch("src.downloader.client.yt_dlp.YoutubeDL", return_value=ydl_mock):
+            results = await downloader.download(_make_parsed_single())
+
+        assert results[0].chapters is None

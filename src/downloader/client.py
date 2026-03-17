@@ -34,6 +34,10 @@ from src.downloader.url_parser import ParsedURL, Platform, URLType
 _TRACK_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
 
+# (start_seconds, title)
+Chapter = tuple[int, str]
+
+
 @dataclass(frozen=True)
 class DownloadResult:
     """Metadata and location of a successfully downloaded audio file."""
@@ -45,6 +49,7 @@ class DownloadResult:
     duration_seconds: int | None
     thumbnail_url: str | None
     file_size_bytes: int
+    chapters: tuple[Chapter, ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -284,6 +289,19 @@ class AudioDownloader:
             else None
         )
 
+        # Extract chapters if available
+        raw_chapters = info.get("chapters")
+        chapters: tuple[Chapter, ...] | None = None
+        if raw_chapters:
+            chapters = (
+                tuple(
+                    (int(ch["start_time"]), ch["title"])
+                    for ch in raw_chapters
+                    if "start_time" in ch and "title" in ch
+                )
+                or None
+            )
+
         return DownloadResult(
             file_path=file_path,
             video_id=result_id,
@@ -292,6 +310,7 @@ class AudioDownloader:
             duration_seconds=info.get("duration"),
             thumbnail_url=thumbnail_url,
             file_size_bytes=file_size,
+            chapters=chapters,
         )
 
     def _find_audio_file(self, ydl_id: str) -> Path:
