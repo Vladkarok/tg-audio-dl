@@ -16,7 +16,3 @@ class MediaURLFilter(MessageFilter):
         if not text:
             return False
         return bool(extract_media_urls(text))
-
-
-# Backward-compatible alias
-YouTubeURLFilter = MediaURLFilter

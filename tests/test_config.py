@@ -228,6 +228,10 @@ class TestConfigOverrideFromEnv:
         """S3_ENABLED=true should set the flag to True."""
         monkeypatch.setenv("S3_ENABLED", "true")
         monkeypatch.setenv("S3_BUCKET", "my-bucket")
+        monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIAIOSFODNN7EXAMPLE")
+        monkeypatch.setenv(
+            "AWS_SECRET_ACCESS_KEY", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+        )
 
         from src.config import Settings
 

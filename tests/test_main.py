@@ -6,8 +6,6 @@ import logging
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from src.main import build_application, post_init, setup_logging
 
 # ---------------------------------------------------------------------------
@@ -194,7 +192,6 @@ def test_build_application_no_local_server_by_default():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_post_init_creates_cache_dir(tmp_path):
     """post_init must create settings.cache_dir and the tmp subdirectory."""
     cache_dir = tmp_path / "cache"
@@ -213,7 +210,6 @@ async def test_post_init_creates_cache_dir(tmp_path):
     assert (cache_dir / "tmp").exists(), "cache_dir/tmp must be created by post_init"
 
 
-@pytest.mark.asyncio
 async def test_post_init_wires_dependencies(tmp_path):
     """post_init must store 'cache' and 'downloader' into bot_data."""
     cache_dir = tmp_path / "cache"
@@ -245,7 +241,6 @@ async def test_post_init_wires_dependencies(tmp_path):
     assert mock_app.bot_data["downloader"] is fake_downloader
 
 
-@pytest.mark.asyncio
 async def test_post_init_uses_settings_token_attribute(tmp_path):
     """post_init reads settings from bot_data — not from get_settings()."""
     cache_dir = tmp_path / "cache"

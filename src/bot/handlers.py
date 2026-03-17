@@ -15,6 +15,7 @@ import logging
 import time
 from pathlib import Path
 
+from mutagen.mp4 import MP4
 from telegram import Bot, InputFile, Message, Update
 from telegram.ext import ContextTypes
 
@@ -61,6 +62,7 @@ def _user_facing_error(exc: Exception) -> str:
 # ---------------------------------------------------------------------------
 
 _user_request_times: dict[int, list[float]] = {}
+_rate_limit_lock = asyncio.Lock()
 
 _WELCOME_TEXT = (
     "👋 Welcome! Send me a YouTube video or playlist URL and I will download "
@@ -131,22 +133,23 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     parsed_url = parsed_urls[0]
 
     # --- Rate limiting ----------------------------------------------------
-    rate_limit: int = settings.RATE_LIMIT_PER_MINUTE
-    now = time.monotonic()
-    timestamps = _user_request_times.get(user_id, [])
-    # Keep only timestamps within the last 60 seconds
-    recent = [t for t in timestamps if now - t < 60.0]
-    if len(recent) >= rate_limit:
-        if recent:
-            _user_request_times[user_id] = recent
-        else:
-            _user_request_times.pop(user_id, None)
-        await update.message.reply_text(
-            "You have reached the rate limit. Please wait a minute."
-        )
-        return
-    recent.append(now)
-    _user_request_times[user_id] = recent
+    async with _rate_limit_lock:
+        rate_limit: int = settings.RATE_LIMIT_PER_MINUTE
+        now = time.monotonic()
+        timestamps = _user_request_times.get(user_id, [])
+        # Keep only timestamps within the last 60 seconds
+        recent = [t for t in timestamps if now - t < 60.0]
+        if len(recent) >= rate_limit:
+            if recent:
+                _user_request_times[user_id] = recent
+            else:
+                _user_request_times.pop(user_id, None)
+            await update.message.reply_text(
+                "You have reached the rate limit. Please wait a minute."
+            )
+            return
+        recent.append(now)
+        _user_request_times[user_id] = recent
 
     # --- Progress message -------------------------------------------------
     progress = ProgressManager(
@@ -178,7 +181,8 @@ async def _process_url(  # noqa: PLR0913
     settings: Settings,
 ) -> None:
     """Inner orchestration: cache check → download → upload."""
-    assert update.message is not None  # guaranteed by handle_url guard
+    if update.message is None:
+        return
     video_id = parsed_url.video_id  # None for playlists
 
     # --- Cache check (single videos only) --------------------------------
@@ -289,8 +293,6 @@ async def _process_url(  # noqa: PLR0913
 def _extract_thumbnail(file_path: Path) -> InputFile | None:
     """Extract embedded cover art from an M4A file as an InputFile for Telegram."""
     try:
-        from mutagen.mp4 import MP4
-
         tags = MP4(file_path).tags
         if tags and "covr" in tags and tags["covr"]:
             return InputFile(io.BytesIO(bytes(tags["covr"][0])), filename="cover.jpg")

@@ -17,10 +17,10 @@ ssh-copy-id -i ~/.ssh/deploy_youtube_bot.pub your-server
 ### 3. Create the app directory and cache folder on the server
 
 ```bash
-ssh your-server "mkdir -p ~/youtube-download-bot/cache && chmod 777 ~/youtube-download-bot/cache"
+ssh your-server "mkdir -p ~/youtube-download-bot/cache && sudo chown 10001:10001 ~/youtube-download-bot/cache && chmod 750 ~/youtube-download-bot/cache"
 ```
 
-> The bot container runs as UID 10001 (non-root). Using `chmod 777` allows both the host user and the container to read/write the cache directory regardless of UID mapping differences between host and container.
+> The bot container runs as UID 10001 (non-root). The cache directory must be owned by this UID so the container can read/write cached audio files.
 
 ### 4. Create the .env file on the server
 
@@ -37,11 +37,11 @@ ALLOWED_USER_IDS=[]
 LOG_LEVEL=INFO
 PLAYLIST_MAX_TRACKS=50
 RATE_LIMIT_PER_MINUTE=5
-GHCR_IMAGE=ghcr.io/your_github_username/youtube-download-bot:v1.1.0
+GHCR_IMAGE=ghcr.io/your_github_username/youtube-download-bot:latest
 EOF
 ```
 
-Replace `your_github_username` (lowercase) with your actual GitHub username and `v1.0.0` with the version you're deploying.
+Replace `your_github_username` (lowercase) with your actual GitHub username.
 
 > `TELEGRAM_LOCAL_SERVER_URL` is intentionally omitted — it is injected automatically by `docker-compose.yml` as `http://telegram-bot-api:8081`.
 
@@ -157,6 +157,8 @@ PROXY_URL=socks5://127.0.0.1:1080
 
 Set up WireGuard between the server and a home device. Route only YouTube traffic
 through the tunnel. This is the most robust self-hosted option.
+
+See [docs/WIREGUARD_PROXY_SETUP.md](docs/WIREGUARD_PROXY_SETUP.md) for step-by-step instructions.
 
 ### Verify the proxy works
 

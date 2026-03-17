@@ -103,9 +103,11 @@ def create_cache(settings: Settings) -> CacheBackend:
 
     if settings.S3_BUCKET is None:
         raise RuntimeError("S3_BUCKET must be set when S3_ENABLED=True")
+    s3_tmp_dir = settings.CACHE_DIR / "s3_tmp"
+    s3_tmp_dir.mkdir(parents=True, exist_ok=True)
     s3 = S3Cache(
         bucket=settings.S3_BUCKET,
         region=settings.AWS_REGION,
-        local_tmp_dir=settings.CACHE_DIR / "s3_tmp",
+        local_tmp_dir=s3_tmp_dir,
     )
     return CompositeCache(disk=disk, s3=s3)

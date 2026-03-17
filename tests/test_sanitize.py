@@ -1,6 +1,6 @@
 """Tests for src/utils/sanitize.py — written first (TDD RED phase)."""
 
-from src.utils.sanitize import clean_title, format_duration, sanitize_filename
+from src.utils.sanitize import clean_title, sanitize_filename
 
 
 class TestSanitizeFilename:
@@ -45,29 +45,6 @@ class TestSanitizeFilename:
         result = sanitize_filename("a<b>c")
         assert "<" not in result
         assert ">" not in result
-
-
-class TestFormatDuration:
-    def test_format_duration_seconds(self):
-        assert format_duration(45) == "00:45"
-
-    def test_format_duration_minutes(self):
-        assert format_duration(185) == "03:05"
-
-    def test_format_duration_hours(self):
-        assert format_duration(3661) == "1:01:01"
-
-    def test_format_duration_none(self):
-        assert format_duration(None) == ""
-
-    def test_format_duration_zero(self):
-        assert format_duration(0) == "00:00"
-
-    def test_format_duration_exactly_one_hour(self):
-        assert format_duration(3600) == "1:00:00"
-
-    def test_format_duration_59_minutes_59_seconds(self):
-        assert format_duration(3599) == "59:59"
 
 
 class TestCleanTitle:

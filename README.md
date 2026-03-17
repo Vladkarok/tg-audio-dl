@@ -9,7 +9,7 @@ A self-hosted Telegram bot that downloads audio from YouTube and SoundCloud and 
 - **Smart caching** — disk LRU cache + optional S3; Telegram `file_id` resend for instant repeat requests
 - **Live progress** — step-by-step status message (downloading → converting → uploading)
 - **Native M4A** — no re-encoding, embedded thumbnail and metadata
-- **Hardened Docker** — rootless (UID 1000), `cap_drop: ALL`, read-only filesystem, resource limits
+- **Hardened Docker** — rootless (UID 10001), `cap_drop: ALL`, read-only filesystem, resource limits
 - **Access control** — user allowlist + per-user rate limiting
 
 ## Quick start
@@ -17,7 +17,7 @@ A self-hosted Telegram bot that downloads audio from YouTube and SoundCloud and 
 ```bash
 cp .env.example .env
 # fill in TELEGRAM_BOT_TOKEN, TELEGRAM_API_ID, TELEGRAM_API_HASH
-mkdir -p cache && sudo chown 1000:1000 cache
+mkdir -p cache && sudo chown 10001:10001 cache && chmod 750 cache
 docker compose up -d
 ```
 
@@ -44,7 +44,7 @@ git tag v1.2.3 && git push origin v1.2.3
 | `RATE_LIMIT_PER_MINUTE` | `5` | Requests per user per minute |
 | `PLAYLIST_MAX_TRACKS` | `50` | Max tracks from a playlist |
 | `LOG_LEVEL` | `INFO` | Logging level (DEBUG/INFO/WARNING/ERROR/CRITICAL) |
-| `COOKIES_FILE` | `None` | Host path to cookies.txt (docker-compose only) — needed on datacenter IPs; see [DEPLOY.md](DEPLOY.md) |
+| `PROXY_URL` | `None` | SOCKS5/HTTP proxy for yt-dlp (required on datacenter IPs); see [DEPLOY.md](DEPLOY.md) |
 | `S3_ENABLED` | `false` | Enable S3 secondary cache |
 | `S3_BUCKET` | — | S3 bucket name (required if S3_ENABLED=true) |
 | `AWS_ACCESS_KEY_ID` | — | AWS credentials for S3 |
@@ -53,4 +53,4 @@ git tag v1.2.3 && git push origin v1.2.3
 
 ## Tech stack
 
-Python 3.13 · python-telegram-bot · yt-dlp · pydantic-settings · aioboto3 · Docker
+Python 3.13 · python-telegram-bot · yt-dlp · pydantic-settings · boto3 · mutagen · Docker

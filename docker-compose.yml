@@ -15,7 +15,10 @@ services:
     # No ports exposed to host — only internal network
     security_opt:
       - no-new-privileges:true
-    # Note: cap_drop ALL omitted — this image needs CAP_CHOWN at startup to own its data dir
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
     mem_limit: 256m
     cpus: "0.5"
     tmpfs:

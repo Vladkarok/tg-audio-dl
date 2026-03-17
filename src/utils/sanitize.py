@@ -32,23 +32,6 @@ def sanitize_filename(name: str, max_length: int = 64) -> str:
 
 
 # ---------------------------------------------------------------------------
-# format_duration
-# ---------------------------------------------------------------------------
-
-
-def format_duration(seconds: int | None) -> str:
-    """Format seconds as MM:SS or H:MM:SS. Returns '' if None."""
-    if seconds is None:
-        return ""
-    seconds = int(seconds)
-    hours, remainder = divmod(seconds, 3600)
-    minutes, secs = divmod(remainder, 60)
-    if hours:
-        return f"{hours}:{minutes:02d}:{secs:02d}"
-    return f"{minutes:02d}:{secs:02d}"
-
-
-# ---------------------------------------------------------------------------
 # clean_title
 # ---------------------------------------------------------------------------
 

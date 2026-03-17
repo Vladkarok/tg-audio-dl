@@ -149,6 +149,13 @@ def _is_valid_video_id(vid: str | None) -> TypeGuard[str]:
     return bool(re.fullmatch(r"[A-Za-z0-9_-]{11}", vid))
 
 
+def _is_valid_playlist_id(pid: str | None) -> TypeGuard[str]:
+    """Validate YouTube playlist IDs against known prefixes."""
+    if not pid:
+        return False
+    return bool(re.fullmatch(r"(?:PL|FL|UU|OLAK5|RD)[A-Za-z0-9_-]{10,80}", pid))
+
+
 # ---------------------------------------------------------------------------
 # Private helpers — SoundCloud
 # ---------------------------------------------------------------------------
@@ -214,7 +221,13 @@ def parse_youtube_url(raw_url: str) -> ParsedURL | None:
         )
 
     # 2. PLAYLIST
-    if parsed.path == "/playlist" and list_id and not video_id:
+    is_playlist = (
+        parsed.path == "/playlist"
+        and list_id
+        and not video_id
+        and _is_valid_playlist_id(list_id)
+    )
+    if is_playlist:
         return ParsedURL(
             url_type=URLType.PLAYLIST,
             video_id=None,
@@ -261,6 +274,9 @@ def parse_soundcloud_url(raw_url: str) -> ParsedURL | None:
 
     # on.soundcloud.com short URLs — can't derive slug, no video_id
     if host == "on.soundcloud.com":
+        path = parsed.path.rstrip("/")
+        if not re.fullmatch(r"/[A-Za-z0-9]{5,20}", path):
+            return None
         return ParsedURL(
             url_type=URLType.SINGLE,
             video_id=None,

@@ -225,11 +225,13 @@ class AudioDownloader:
             yt_dlp.utils.ExtractorError,
             yt_dlp.utils.UnsupportedError,
         ) as exc:
-            raise VideoUnavailableError(str(exc)) from exc
+            raise VideoUnavailableError(self._sanitize_error(str(exc))) from exc
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            raise DownloadError(f"Unexpected download error: {exc}") from exc
+            raise DownloadError(
+                self._sanitize_error(f"Unexpected download error: {exc}")
+            ) from exc
 
     # ------------------------------------------------------------------
     # DownloadResult construction
@@ -357,6 +359,23 @@ class AudioDownloader:
     # ------------------------------------------------------------------
     # Cleanup helpers
     # ------------------------------------------------------------------
+
+    def _sanitize_error(self, msg: str) -> str:
+        """Strip proxy credentials from error messages."""
+        if self._proxy_url and "@" in self._proxy_url:
+            msg = msg.replace(self._proxy_url, "<proxy>")
+            # Also strip just the userinfo part
+            from urllib.parse import urlparse as _urlparse
+
+            with contextlib.suppress(Exception):
+                p = _urlparse(self._proxy_url)
+                if p.username:
+                    if p.password:
+                        cred = f"{p.username}:{p.password}@"
+                    else:
+                        cred = f"{p.username}@"
+                    msg = msg.replace(cred, "")
+        return msg
 
     def _cleanup_partials(self, yt_id: str | None) -> None:
         """Remove any partial files for *yt_id* from download_dir."""
