@@ -150,7 +150,9 @@ class ProgressManager:
                 # asyncio.sleep is mocked in tests.
                 loop = asyncio.get_running_loop()
                 fut: asyncio.Future[None] = loop.create_future()
-                loop.call_later(1.0, fut.set_result, None)
+                loop.call_later(
+                    1.0, lambda f=fut: f.set_result(None) if not f.done() else None
+                )
                 await fut
                 idx += 1
         except asyncio.CancelledError:
