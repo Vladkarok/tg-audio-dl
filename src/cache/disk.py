@@ -2,8 +2,10 @@
 
 import asyncio
 import contextlib
+import errno
 import logging
 import os
+import re
 from pathlib import Path
 
 import aiofiles
@@ -11,6 +13,7 @@ import aiofiles
 from src.cache.base import CacheBackend, validate_video_id
 
 CHUNK_SIZE = 256 * 1024  # 256 KB
+_FILE_ID_RE = re.compile(r"^[A-Za-z0-9_\-]{1,256}$")
 
 logger = logging.getLogger(__name__)
 
@@ -55,23 +58,31 @@ class DiskCache(CacheBackend):
         return path
 
     async def put(self, video_id: str, file_path: Path) -> Path:
-        """Copy *file_path* into the cache and trigger LRU eviction if needed."""
+        """Move or copy *file_path* into cache; trigger LRU eviction if needed."""
         validate_video_id(video_id)
         self._ensure_cache_dir()
         dest = self._path_for(video_id)
 
-        # Async copy via aiofiles in chunks to avoid loading entire file into RAM
+        # Try atomic rename first (same filesystem); fall back to chunked copy
         try:
-            async with (
-                aiofiles.open(file_path, "rb") as src_f,
-                aiofiles.open(dest, "wb") as dst_f,
-            ):
-                while chunk := await src_f.read(CHUNK_SIZE):
-                    await dst_f.write(chunk)
-        except OSError:
+            await asyncio.to_thread(os.rename, file_path, dest)
+        except OSError as exc:
+            if exc.errno != errno.EXDEV:
+                raise
+            try:
+                async with (
+                    aiofiles.open(file_path, "rb") as src_f,
+                    aiofiles.open(dest, "wb") as dst_f,
+                ):
+                    while chunk := await src_f.read(CHUNK_SIZE):
+                        await dst_f.write(chunk)
+            except OSError:
+                with contextlib.suppress(OSError):
+                    dest.unlink()
+                raise
+            # Remove source to complete the cross-device "move"
             with contextlib.suppress(OSError):
-                dest.unlink()
-            raise
+                await asyncio.to_thread(file_path.unlink)
 
         await self.evict_lru_if_needed()
         return dest
@@ -99,6 +110,9 @@ class DiskCache(CacheBackend):
     async def store_file_id(self, video_id: str, file_id: str) -> None:
         """Persist a Telegram file_id for the given video_id."""
         validate_video_id(video_id)
+        if not _FILE_ID_RE.fullmatch(file_id):
+            logger.warning("store_file_id: invalid file_id %r, skipping", file_id)
+            return
         self._ensure_cache_dir()
         await asyncio.to_thread(self._fid_path(video_id).write_text, file_id)
 
@@ -147,5 +161,9 @@ class DiskCache(CacheBackend):
                     await asyncio.to_thread(path.unlink)
                     total -= size
                     logger.info("DiskCache: evicted %s (LRU)", path.name)
+                    # Clean up orphaned .fid sidecar
+                    fid_path = path.with_suffix(".fid")
+                    with contextlib.suppress(FileNotFoundError):
+                        await asyncio.to_thread(fid_path.unlink)
                 except FileNotFoundError:
                     pass

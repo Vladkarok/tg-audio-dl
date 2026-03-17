@@ -20,6 +20,7 @@ from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse as _urlparse
 
 import yt_dlp
 
@@ -101,10 +102,12 @@ class AudioDownloader:
         download_dir: Path,
         max_file_size_bytes: int,
         proxy_url: str | None = None,
+        max_concurrent_downloads: int = 3,
     ) -> None:
         self._download_dir = download_dir
         self._max_file_size_bytes = max_file_size_bytes
         self._proxy_url = proxy_url
+        self._semaphore = asyncio.Semaphore(max_concurrent_downloads)
 
     # ------------------------------------------------------------------
     # Public API
@@ -123,6 +126,16 @@ class AudioDownloader:
 
         Raises DownloadError (or subclass) on failure.
         """
+        async with self._semaphore:
+            return await self._download_inner(parsed_url, progress_callback, max_tracks)
+
+    async def _download_inner(
+        self,
+        parsed_url: ParsedURL,
+        progress_callback: ProgressCallback | None = None,
+        max_tracks: int = 50,
+    ) -> list[DownloadResult]:
+        """Inner download logic, runs under the concurrency semaphore."""
         loop = asyncio.get_running_loop()
 
         if parsed_url.url_type == URLType.PLAYLIST:
@@ -262,13 +275,22 @@ class AudioDownloader:
 
         artist = info.get("uploader") or info.get("channel") or None
 
+        # Only accept http(s) thumbnail URLs — reject data:, file:, etc.
+        raw_thumb = info.get("thumbnail")
+        thumbnail_url = (
+            raw_thumb
+            if isinstance(raw_thumb, str)
+            and raw_thumb.startswith(("http://", "https://"))
+            else None
+        )
+
         return DownloadResult(
             file_path=file_path,
             video_id=result_id,
             title=info["title"],
             artist=artist,
             duration_seconds=info.get("duration"),
-            thumbnail_url=info.get("thumbnail"),
+            thumbnail_url=thumbnail_url,
             file_size_bytes=file_size,
         )
 
@@ -365,8 +387,6 @@ class AudioDownloader:
         if self._proxy_url and "@" in self._proxy_url:
             msg = msg.replace(self._proxy_url, "<proxy>")
             # Also strip just the userinfo part
-            from urllib.parse import urlparse as _urlparse
-
             with contextlib.suppress(Exception):
                 p = _urlparse(self._proxy_url)
                 if p.username:

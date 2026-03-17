@@ -342,3 +342,48 @@ class TestDiskCacheRaceConditions:
 
         with patch("src.cache.disk.asyncio.to_thread", _patched):
             await cache.evict_lru_if_needed()  # must not raise
+
+
+class TestLruEvictsFidSidecar:
+    async def test_lru_eviction_removes_fid_sidecar(self, tmp_path):
+        """When LRU evicts a .m4a, the corresponding .fid sidecar is also removed."""
+        cache = DiskCache(cache_dir=tmp_path / "fid_cleanup", max_size_bytes=50)
+        _place_file_directly(cache, "vid1", b"X" * 100)
+        # Create a .fid sidecar
+        fid_path = cache.cache_dir / "vid1.fid"
+        fid_path.write_text("AgACAgIA_test_fid")
+
+        await cache.evict_lru_if_needed()
+
+        assert not (cache.cache_dir / "vid1.m4a").exists()
+        assert not fid_path.exists()
+
+
+class TestPutUsesRename:
+    async def test_put_moves_file_on_same_fs(self, tmp_path):
+        """put() should use rename (move) when source and dest are same filesystem."""
+        cache = DiskCache(cache_dir=tmp_path / "cache", max_size_bytes=10**9)
+        src_file = tmp_path / "source.m4a"
+        src_file.write_bytes(b"audio data")
+
+        result = await cache.put("testvid123", src_file)
+
+        assert result == cache.cache_dir / "testvid123.m4a"
+        assert result.read_bytes() == b"audio data"
+        # Source should be gone (renamed, not copied)
+        assert not src_file.exists()
+
+
+class TestStoreFileIdValidation:
+    async def test_valid_file_id_stored(self, tmp_path):
+        cache = DiskCache(cache_dir=tmp_path / "fid", max_size_bytes=10**9)
+        cache._ensure_cache_dir()
+        await cache.store_file_id("vid1", "AgACAgIA_valid_id")
+        assert await cache.get_file_id("vid1") == "AgACAgIA_valid_id"
+
+    async def test_invalid_file_id_rejected(self, tmp_path):
+        cache = DiskCache(cache_dir=tmp_path / "fid", max_size_bytes=10**9)
+        cache._ensure_cache_dir()
+        await cache.store_file_id("vid1", "../../etc/passwd")
+        # Should not be stored
+        assert await cache.get_file_id("vid1") is None

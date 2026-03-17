@@ -1022,6 +1022,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "aiofiles" },
+    { name = "boto3" },
     { name = "mutagen" },
     { name = "pydantic-settings" },
     { name = "pysocks" },
@@ -1044,6 +1045,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "aiofiles", specifier = ">=23.0" },
+    { name = "boto3", specifier = ">=1.28" },
     { name = "mutagen", specifier = ">=1.47" },
     { name = "pydantic-settings", specifier = ">=2.0" },
     { name = "pysocks", specifier = ">=1.7" },

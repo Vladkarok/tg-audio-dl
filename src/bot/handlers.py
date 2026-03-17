@@ -15,7 +15,7 @@ import logging
 import time
 from pathlib import Path
 
-from mutagen.mp4 import MP4
+from mutagen.mp4 import MP4  # type: ignore[import-untyped]
 from telegram import Bot, InputFile, Message, Update
 from telegram.ext import ContextTypes
 
@@ -63,6 +63,8 @@ def _user_facing_error(exc: Exception) -> str:
 
 _user_request_times: dict[int, list[float]] = {}
 _rate_limit_lock = asyncio.Lock()
+_rate_limit_request_count: int = 0
+_RATE_LIMIT_CLEANUP_INTERVAL: int = 100
 
 _WELCOME_TEXT = (
     "👋 Welcome! Send me a YouTube video or playlist URL and I will download "
@@ -112,9 +114,7 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     if update.effective_user is None or update.message is None:
         return
 
-    settings = context.bot_data["settings"]
-    downloader = context.bot_data["downloader"]
-    cache = context.bot_data["cache"]
+    settings: Settings = context.bot_data["settings"]
 
     user_id: int = update.effective_user.id
     text: str = update.message.text or ""
@@ -134,6 +134,7 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
     # --- Rate limiting ----------------------------------------------------
     async with _rate_limit_lock:
+        global _rate_limit_request_count  # noqa: PLW0603
         rate_limit: int = settings.RATE_LIMIT_PER_MINUTE
         now = time.monotonic()
         timestamps = _user_request_times.get(user_id, [])
@@ -151,6 +152,18 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         recent.append(now)
         _user_request_times[user_id] = recent
 
+        # Periodic cleanup of stale entries to prevent unbounded growth
+        _rate_limit_request_count += 1
+        if _rate_limit_request_count >= _RATE_LIMIT_CLEANUP_INTERVAL:
+            _rate_limit_request_count = 0
+            stale_uids = [
+                uid
+                for uid, ts in _user_request_times.items()
+                if not any(now - t < 60.0 for t in ts)
+            ]
+            for uid in stale_uids:
+                del _user_request_times[uid]
+
     # --- Progress message -------------------------------------------------
     progress = ProgressManager(
         context.bot,
@@ -160,9 +173,7 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     await progress.create()
 
     try:
-        await _process_url(
-            update, context, progress, parsed_url, downloader, cache, settings
-        )
+        await _process_url(update, context, progress, parsed_url)
     except Exception:
         logger.exception("Unexpected error in handle_url for user %d", user_id)
         with contextlib.suppress(Exception):
@@ -171,18 +182,19 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             )
 
 
-async def _process_url(  # noqa: PLR0913
+async def _process_url(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
     progress: ProgressManager,
     parsed_url: ParsedURL,
-    downloader: AudioDownloader,
-    cache: CacheBackend,
-    settings: Settings,
 ) -> None:
     """Inner orchestration: cache check → download → upload."""
     if update.message is None:
         return
+
+    settings: Settings = context.bot_data["settings"]
+    downloader: AudioDownloader = context.bot_data["downloader"]
+    cache: CacheBackend = context.bot_data["cache"]
     video_id = parsed_url.video_id  # None for playlists
 
     # --- Cache check (single videos only) --------------------------------
@@ -226,7 +238,7 @@ async def _process_url(  # noqa: PLR0913
             file_size_bytes=cached_path.stat().st_size,
         )
         msg = await _send_audio(context.bot, update.message.chat_id, result, progress)
-        if msg is not None and hasattr(msg, "audio") and msg.audio:
+        if msg.audio:
             with contextlib.suppress(Exception):
                 await cache.store_file_id(video_id, msg.audio.file_id)
         await asyncio.sleep(2)
@@ -280,7 +292,7 @@ async def _process_url(  # noqa: PLR0913
             logger.exception("Cache put failed for video_id=%s", result.video_id)
 
         msg = await _send_audio(context.bot, update.message.chat_id, result, progress)
-        if msg is not None and hasattr(msg, "audio") and msg.audio:
+        if msg.audio:
             with contextlib.suppress(Exception):
                 await cache.store_file_id(result.video_id, msg.audio.file_id)
         result.file_path.unlink(missing_ok=True)
@@ -293,11 +305,11 @@ async def _process_url(  # noqa: PLR0913
 def _extract_thumbnail(file_path: Path) -> InputFile | None:
     """Extract embedded cover art from an M4A file as an InputFile for Telegram."""
     try:
-        tags = MP4(file_path).tags
+        tags = MP4(file_path).tags  # type: ignore[no-untyped-call]
         if tags and "covr" in tags and tags["covr"]:
             return InputFile(io.BytesIO(bytes(tags["covr"][0])), filename="cover.jpg")
     except Exception:
-        logger.debug("Could not extract thumbnail from %s", file_path)
+        logger.debug("Could not extract thumbnail from %s", file_path, exc_info=True)
     return None
 
 

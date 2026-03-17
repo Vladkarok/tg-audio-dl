@@ -5,7 +5,7 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 
 # YouTube 11-char IDs, SoundCloud numeric IDs, and sc_slug cache keys (up to 64 chars).
-VIDEO_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")
+VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
 
 def validate_video_id(video_id: str) -> None:

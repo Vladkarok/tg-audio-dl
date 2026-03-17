@@ -50,8 +50,9 @@ class CompositeCache(CacheBackend):
         disk_path = await self.disk.put(video_id, file_path)
 
         # Best-effort S3 upload — failure must not crash the bot.
+        # Use disk_path (not file_path) because disk.put may have renamed it.
         try:
-            await self.s3.put(video_id, file_path)
+            await self.s3.put(video_id, disk_path)
         except Exception as exc:
             logger.warning(
                 "CompositeCache: S3 put failed for %s (non-fatal): %s", video_id, exc

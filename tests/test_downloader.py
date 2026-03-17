@@ -582,6 +582,75 @@ class TestDownloadResultOptionalFieldsNone:
 
 
 # ---------------------------------------------------------------------------
+# test_thumbnail_url_validation
+# ---------------------------------------------------------------------------
+
+
+class TestThumbnailUrlValidation:
+    """Only http(s) thumbnail URLs should be accepted; others become None."""
+
+    async def test_https_thumbnail_accepted(self, tmp_path: Path) -> None:
+        _create_fake_m4a(tmp_path, VIDEO_ID)
+        info = {
+            "id": VIDEO_ID,
+            "title": "Test",
+            "ext": "m4a",
+            "thumbnail": "https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg",
+        }
+        downloader = AudioDownloader(
+            download_dir=tmp_path, max_file_size_bytes=10 * 1024 * 1024
+        )
+
+        def fake_ydl_cls(opts):
+            return _make_ydl_mock(info)
+
+        with patch("src.downloader.client.yt_dlp.YoutubeDL", side_effect=fake_ydl_cls):
+            results = await downloader.download(_make_parsed_single())
+
+        assert results[0].thumbnail_url == info["thumbnail"]
+
+    async def test_data_uri_thumbnail_rejected(self, tmp_path: Path) -> None:
+        _create_fake_m4a(tmp_path, VIDEO_ID)
+        info = {
+            "id": VIDEO_ID,
+            "title": "Test",
+            "ext": "m4a",
+            "thumbnail": "data:image/jpeg;base64,/9j/4AAQ...",
+        }
+        downloader = AudioDownloader(
+            download_dir=tmp_path, max_file_size_bytes=10 * 1024 * 1024
+        )
+
+        def fake_ydl_cls(opts):
+            return _make_ydl_mock(info)
+
+        with patch("src.downloader.client.yt_dlp.YoutubeDL", side_effect=fake_ydl_cls):
+            results = await downloader.download(_make_parsed_single())
+
+        assert results[0].thumbnail_url is None
+
+    async def test_file_uri_thumbnail_rejected(self, tmp_path: Path) -> None:
+        _create_fake_m4a(tmp_path, VIDEO_ID)
+        info = {
+            "id": VIDEO_ID,
+            "title": "Test",
+            "ext": "m4a",
+            "thumbnail": "file:///etc/passwd",
+        }
+        downloader = AudioDownloader(
+            download_dir=tmp_path, max_file_size_bytes=10 * 1024 * 1024
+        )
+
+        def fake_ydl_cls(opts):
+            return _make_ydl_mock(info)
+
+        with patch("src.downloader.client.yt_dlp.YoutubeDL", side_effect=fake_ydl_cls):
+            results = await downloader.download(_make_parsed_single())
+
+        assert results[0].thumbnail_url is None
+
+
+# ---------------------------------------------------------------------------
 # test_download_playlist_noplaylist_false
 # ---------------------------------------------------------------------------
 

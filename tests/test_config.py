@@ -300,3 +300,58 @@ def test_config_s3_enabled_without_bucket_raises(monkeypatch):
 
     with pytest.raises((ValidationError, ValueError)):
         Settings()
+
+
+# ---------------------------------------------------------------------------
+# PROXY_URL scheme validation
+# ---------------------------------------------------------------------------
+
+
+class TestProxyUrlValidation:
+    def test_proxy_url_socks5_accepted(self, monkeypatch):
+        monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123:ABC")
+        monkeypatch.setenv("PROXY_URL", "socks5://user:pass@host:1080")
+        from src.config import Settings
+
+        s = Settings()
+        assert s.PROXY_URL == "socks5://user:pass@host:1080"
+
+    def test_proxy_url_http_accepted(self, monkeypatch):
+        monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123:ABC")
+        monkeypatch.setenv("PROXY_URL", "http://proxy:8080")
+        from src.config import Settings
+
+        s = Settings()
+        assert s.PROXY_URL == "http://proxy:8080"
+
+    def test_proxy_url_https_accepted(self, monkeypatch):
+        monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123:ABC")
+        monkeypatch.setenv("PROXY_URL", "https://proxy:8443")
+        from src.config import Settings
+
+        s = Settings()
+        assert s.PROXY_URL == "https://proxy:8443"
+
+    def test_proxy_url_socks4_accepted(self, monkeypatch):
+        monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123:ABC")
+        monkeypatch.setenv("PROXY_URL", "socks4://host:1080")
+        from src.config import Settings
+
+        s = Settings()
+        assert s.PROXY_URL == "socks4://host:1080"
+
+    def test_proxy_url_invalid_scheme_rejected(self, monkeypatch):
+        monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123:ABC")
+        monkeypatch.setenv("PROXY_URL", "ftp://host:21")
+        from src.config import Settings
+
+        with pytest.raises((ValidationError, ValueError)):
+            Settings()
+
+    def test_proxy_url_empty_string_becomes_none(self, monkeypatch):
+        monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123:ABC")
+        monkeypatch.setenv("PROXY_URL", "")
+        from src.config import Settings
+
+        s = Settings()
+        assert s.PROXY_URL is None

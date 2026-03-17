@@ -120,6 +120,18 @@ class Settings(BaseSettings):
             )
         return v
 
+    @field_validator("PROXY_URL")
+    @classmethod
+    def validate_proxy_url(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        valid_schemes = ("http://", "https://", "socks4://", "socks5://")
+        if not v.startswith(valid_schemes):
+            raise ValueError(
+                "PROXY_URL must start with http://, https://, socks4://, or socks5://"
+            )
+        return v
+
     @field_validator("TELEGRAM_BOT_TOKEN")
     @classmethod
     def validate_bot_token(cls, v: str) -> str:
