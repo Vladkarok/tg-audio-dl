@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import dataclasses
 import io
 import logging
 import time
@@ -285,17 +286,25 @@ async def _process_url(
             await progress.set_playlist_context(track_index=idx, total_tracks=total)
         await progress.set_step(Step.UPLOADING, StepStatus.ACTIVE)
 
-        # Store in cache (fire-and-forget errors are logged but not fatal)
+        # Store in cache — put() moves the file, so use the returned path
+        cached_path: Path | None = None
         try:
-            await cache.put(result.video_id, result.file_path)
+            cached_path = await cache.put(result.video_id, result.file_path)
         except Exception:
             logger.exception("Cache put failed for video_id=%s", result.video_id)
 
-        msg = await _send_audio(context.bot, update.message.chat_id, result, progress)
+        # Use cached path if available, otherwise fall back to original
+        send_result = (
+            dataclasses.replace(result, file_path=cached_path)
+            if cached_path
+            else result
+        )
+        msg = await _send_audio(
+            context.bot, update.message.chat_id, send_result, progress
+        )
         if msg.audio:
             with contextlib.suppress(Exception):
                 await cache.store_file_id(result.video_id, msg.audio.file_id)
-        result.file_path.unlink(missing_ok=True)
 
     await progress.set_step(Step.UPLOADING, StepStatus.DONE)
     await asyncio.sleep(2)
