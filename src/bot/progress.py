@@ -60,6 +60,7 @@ def step_icon(step: Step, status: StepStatus) -> str:
         return _STEP_ACTIVE_ICONS[step]
     return _STATUS_ICONS[status]
 
+
 _DEBOUNCE_SECONDS: float = 1.0
 
 
