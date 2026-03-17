@@ -32,11 +32,18 @@ class StepStatus(Enum):
     ERROR = "error"
 
 
-STEP_ICONS: dict[StepStatus, str] = {
+_STATUS_ICONS: dict[StepStatus, str] = {
     StepStatus.PENDING: "⬜",
     StepStatus.ACTIVE: "⏳",
     StepStatus.DONE: "✅",
     StepStatus.ERROR: "❌",
+}
+
+_STEP_ACTIVE_ICONS: dict[Step, str] = {
+    Step.RECEIVED: "⏳",
+    Step.DOWNLOADING: "⬇️",
+    Step.PROCESSING: "⚙️",
+    Step.UPLOADING: "📤",
 }
 
 STEP_LABELS: dict[Step, str] = {
@@ -45,6 +52,13 @@ STEP_LABELS: dict[Step, str] = {
     Step.PROCESSING: "Processing",
     Step.UPLOADING: "Uploading to Telegram",
 }
+
+
+def step_icon(step: Step, status: StepStatus) -> str:
+    """Return the icon for a step+status combination."""
+    if status == StepStatus.ACTIVE:
+        return _STEP_ACTIVE_ICONS[step]
+    return _STATUS_ICONS[status]
 
 _DEBOUNCE_SECONDS: float = 1.0
 
@@ -65,7 +79,7 @@ class ProgressManager:
         self._last_edit_time: float = 0.0
         self._playlist_track: int | None = None
         self._playlist_total: int | None = None
-        self._upload_animation_task: asyncio.Task[None] | None = None
+        self._animation_tasks: dict[Step, asyncio.Task[None]] = {}
 
         # Initialise step state: RECEIVED=DONE, rest=PENDING
         self._steps: dict[Step, tuple[StepStatus, str]] = {
@@ -96,34 +110,47 @@ class ProgressManager:
         detail: str = "",
     ) -> None:
         """Update a step's status and optional detail. Debounced to 1 edit/sec."""
-        if step == Step.UPLOADING and status in (StepStatus.DONE, StepStatus.ERROR):
-            await self.stop_upload_animation()
+        if status in (StepStatus.DONE, StepStatus.ERROR):
+            await self._stop_animation(step)
         self._steps[step] = (status, detail)
         await self._maybe_edit()
 
+    async def start_animation(self, step: Step) -> None:
+        """Start cycling dots animation on the given step."""
+        if step in self._animation_tasks:
+            return
+        self._animation_tasks[step] = asyncio.create_task(self._animate(step))
+
     async def start_upload_animation(self) -> None:
         """Start cycling dots animation on the UPLOADING step."""
-        if self._upload_animation_task is not None:
-            return
-        self._upload_animation_task = asyncio.create_task(self._animate_upload())
+        await self.start_animation(Step.UPLOADING)
+
+    async def _stop_animation(self, step: Step) -> None:
+        """Cancel animation task for a step if running."""
+        task = self._animation_tasks.pop(step, None)
+        if task is not None:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
 
     async def stop_upload_animation(self) -> None:
         """Cancel the upload animation task."""
-        if self._upload_animation_task is not None:
-            self._upload_animation_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._upload_animation_task
-            self._upload_animation_task = None
+        await self._stop_animation(Step.UPLOADING)
 
-    async def _animate_upload(self) -> None:
+    async def _animate(self, step: Step) -> None:
         """Cycle: '.' -> '..' -> '...' -> '.' every second."""
         dots_cycle = [".", "..", "..."]
         idx = 0
         try:
             while True:
-                self._steps[Step.UPLOADING] = (StepStatus.ACTIVE, dots_cycle[idx % 3])
+                self._steps[step] = (StepStatus.ACTIVE, dots_cycle[idx % 3])
                 await self._maybe_edit()
-                await asyncio.sleep(1.0)
+                # Use a real event-loop future so the loop yields even when
+                # asyncio.sleep is mocked in tests.
+                loop = asyncio.get_running_loop()
+                fut: asyncio.Future[None] = loop.create_future()
+                loop.call_later(1.0, fut.set_result, None)
+                await fut
                 idx += 1
         except asyncio.CancelledError:
             pass
@@ -168,7 +195,7 @@ class ProgressManager:
         lines = [header, ""]
         for step in Step:
             status, detail = self._steps[step]
-            icon = STEP_ICONS[status]
+            icon = step_icon(step, status)
             label = STEP_LABELS[step]
             if detail:
                 lines.append(f"{icon} {label}... {detail}")

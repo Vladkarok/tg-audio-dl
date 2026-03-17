@@ -326,10 +326,12 @@ async def _send_audio(
     bot: Bot, chat_id: int, result: DownloadResult, progress: ProgressManager
 ) -> Message:
     """Send a single audio file to the user. Returns the sent Message."""
-    await progress.set_step(Step.PROCESSING, StepStatus.DONE)
+    await progress.set_step(Step.PROCESSING, StepStatus.ACTIVE)
+    await progress.start_animation(Step.PROCESSING)
     display_title = clean_title(result.title) or result.video_id
     safe_filename = sanitize_filename(display_title) or result.video_id
     thumbnail = _extract_thumbnail(result.file_path)
+    await progress.set_step(Step.PROCESSING, StepStatus.DONE)
     await progress.start_upload_animation()
     with result.file_path.open("rb") as audio_file:
         msg = await bot.send_audio(

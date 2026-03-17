@@ -187,7 +187,7 @@ class TestUploadAnimation:
         pm = ProgressManager(bot, chat_id=1, reply_to_message_id=10)
         pm._message_id = 1
         await pm.start_upload_animation()
-        assert pm._upload_animation_task is not None
+        assert Step.UPLOADING in pm._animation_tasks
         await pm.stop_upload_animation()
 
     async def test_stop_upload_animation_cancels_task(self):
@@ -197,7 +197,7 @@ class TestUploadAnimation:
         pm._message_id = 1
         await pm.start_upload_animation()
         await pm.stop_upload_animation()
-        assert pm._upload_animation_task is None
+        assert Step.UPLOADING not in pm._animation_tasks
 
     async def test_start_animation_noop_if_already_running(self):
         """start_upload_animation() is idempotent — calling twice keeps one task."""
@@ -205,9 +205,9 @@ class TestUploadAnimation:
         pm = ProgressManager(bot, chat_id=1, reply_to_message_id=10)
         pm._message_id = 1
         await pm.start_upload_animation()
-        first_task = pm._upload_animation_task
+        first_task = pm._animation_tasks[Step.UPLOADING]
         await pm.start_upload_animation()
-        assert pm._upload_animation_task is first_task
+        assert pm._animation_tasks[Step.UPLOADING] is first_task
         await pm.stop_upload_animation()
 
     async def test_set_step_uploading_done_stops_animation(self):
@@ -218,7 +218,7 @@ class TestUploadAnimation:
         pm._last_edit_time = 0.0
         await pm.start_upload_animation()
         await pm.set_step(Step.UPLOADING, StepStatus.DONE)
-        assert pm._upload_animation_task is None
+        assert Step.UPLOADING not in pm._animation_tasks
 
     async def test_set_step_uploading_error_stops_animation(self):
         """set_step(UPLOADING, ERROR) auto-stops the upload animation."""
@@ -228,7 +228,7 @@ class TestUploadAnimation:
         pm._last_edit_time = 0.0
         await pm.start_upload_animation()
         await pm.set_step(Step.UPLOADING, StepStatus.ERROR)
-        assert pm._upload_animation_task is None
+        assert Step.UPLOADING not in pm._animation_tasks
 
     async def test_stop_animation_without_start_is_safe(self):
         """stop_upload_animation() when no animation is running does not raise."""
