@@ -1,5 +1,7 @@
 """Abstract cache backend interface."""
 
+from __future__ import annotations
+
 import re
 from abc import ABC, abstractmethod
 from pathlib import Path
@@ -44,3 +46,12 @@ class CacheBackend(ABC):
     @abstractmethod
     async def store_file_id(self, video_id: str, file_id: str) -> None:
         """Persist a Telegram file_id for the given video_id."""
+
+    async def get_chapters(self, video_id: str) -> tuple[tuple[int, str], ...] | None:
+        """Return cached chapters or None. Default: not stored."""
+        return None
+
+    async def store_chapters(  # noqa: B027
+        self, video_id: str, chapters: tuple[tuple[int, str], ...]
+    ) -> None:
+        """Persist chapters for a video_id. Default: no-op."""

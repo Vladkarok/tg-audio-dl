@@ -230,9 +230,8 @@ async def _process_url(
         cached_path: Path | None = await cache.get(video_id)
         if cached_path is None:
             return
-        cached_title, cached_artist, cached_chapters = _extract_m4a_metadata(
-            cached_path
-        )
+        cached_title, cached_artist = _extract_m4a_metadata(cached_path)
+        cached_chapters = await cache.get_chapters(video_id)
         result = DownloadResult(
             file_path=cached_path,
             video_id=video_id,
@@ -310,40 +309,27 @@ async def _process_url(
         if msg.audio:
             with contextlib.suppress(Exception):
                 await cache.store_file_id(result.video_id, msg.audio.file_id)
+        if result.chapters:
+            with contextlib.suppress(Exception):
+                await cache.store_chapters(result.video_id, result.chapters)
 
     await progress.set_step(Step.UPLOADING, StepStatus.DONE)
     await asyncio.sleep(2)
     await progress.delete()
 
 
-def _extract_m4a_metadata(
-    file_path: Path,
-) -> tuple[str | None, str | None, tuple[Chapter, ...] | None]:
-    """Extract title, artist, and chapters from M4A tags.
-
-    Returns (title, artist, chapters).
-    """
+def _extract_m4a_metadata(file_path: Path) -> tuple[str | None, str | None]:
+    """Extract title and artist from M4A tags. Returns (title, artist)."""
     try:
-        audio = MP4(file_path)  # type: ignore[no-untyped-call]
-        tags = audio.tags
-        title = tags.get("\xa9nam", [None])[0] if tags else None
-        artist = tags.get("\xa9ART", [None])[0] if tags else None
-
-        chapters: tuple[Chapter, ...] | None = None
-        if hasattr(audio, "chapters") and audio.chapters:
-            chapters = (
-                tuple(
-                    (int(ch.start), ch.title)
-                    for ch in audio.chapters
-                    if hasattr(ch, "start") and hasattr(ch, "title")
-                )
-                or None
-            )
-
-        return title, artist, chapters
+        tags = MP4(file_path).tags  # type: ignore[no-untyped-call]
+        if not tags:
+            return None, None
+        title = tags.get("\xa9nam", [None])[0]
+        artist = tags.get("\xa9ART", [None])[0]
+        return title, artist
     except Exception:
         logger.debug("Could not read M4A metadata from %s", file_path, exc_info=True)
-        return None, None, None
+        return None, None
 
 
 # ---------------------------------------------------------------------------
@@ -382,6 +368,9 @@ def _build_caption(
     suffix = "\n..."
     base = title_line + "\n\n"
     available = max_length - len(base) - len(suffix)
+
+    if available <= 0:
+        return title_line[:max_length]
 
     included: list[str] = []
     used = 0

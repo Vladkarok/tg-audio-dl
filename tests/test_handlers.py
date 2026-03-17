@@ -78,6 +78,8 @@ def make_context(
         cache.put = AsyncMock(return_value=Path("/tmp/dQw4w9WgXcQ.m4a"))
         cache.get_file_id = AsyncMock(return_value=None)
         cache.store_file_id = AsyncMock()
+        cache.get_chapters = AsyncMock(return_value=None)
+        cache.store_chapters = AsyncMock()
 
     context = MagicMock()
     context.bot = MagicMock()
@@ -140,6 +142,8 @@ class TestHandleUrlCacheHit:
         cache.get = AsyncMock(return_value=cached_file)
         cache.get_file_id = AsyncMock(return_value=None)
         cache.store_file_id = AsyncMock()
+        cache.get_chapters = AsyncMock(return_value=None)
+        cache.store_chapters = AsyncMock()
         downloader = MagicMock()
         downloader.download = AsyncMock()
 
@@ -163,6 +167,8 @@ class TestHandleUrlFileIdCaching:
         cache.get_file_id = AsyncMock(return_value="AgACAgIA_cached_file_id")
         cache.get = AsyncMock(return_value=tmp_path / "dQw4w9WgXcQ.m4a")
         cache.store_file_id = AsyncMock()
+        cache.get_chapters = AsyncMock(return_value=None)
+        cache.store_chapters = AsyncMock()
 
         context = make_context(cache=cache)
         context.bot.send_audio = AsyncMock(
@@ -191,6 +197,8 @@ class TestHandleUrlFileIdCaching:
         cache.get = AsyncMock(return_value=cached_file)
         cache.get_file_id = AsyncMock(return_value=None)
         cache.store_file_id = AsyncMock()
+        cache.get_chapters = AsyncMock(return_value=None)
+        cache.store_chapters = AsyncMock()
 
         context = make_context(cache=cache)
         msg_mock = MagicMock()
@@ -225,6 +233,8 @@ class TestHandleUrlFileIdCaching:
         cache.exists = AsyncMock(return_value=False)
         cache.put = AsyncMock(return_value=audio_file)
         cache.store_file_id = AsyncMock()
+        cache.get_chapters = AsyncMock(return_value=None)
+        cache.store_chapters = AsyncMock()
 
         downloader = MagicMock()
         downloader.download = AsyncMock(return_value=[result])
@@ -255,6 +265,8 @@ class TestHandleUrlCacheHitUX:
         cache.get = AsyncMock(return_value=cached_file)
         cache.get_file_id = AsyncMock(return_value=None)
         cache.store_file_id = AsyncMock()
+        cache.get_chapters = AsyncMock(return_value=None)
+        cache.store_chapters = AsyncMock()
 
         context = make_context(cache=cache)
         context.bot.send_audio = AsyncMock(

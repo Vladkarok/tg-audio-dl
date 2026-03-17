@@ -1,8 +1,11 @@
 """Local filesystem LRU cache backend."""
 
+from __future__ import annotations
+
 import asyncio
 import contextlib
 import errno
+import json
 import logging
 import os
 import re
@@ -39,6 +42,9 @@ class DiskCache(CacheBackend):
 
     def _fid_path(self, video_id: str) -> Path:
         return self.cache_dir / f"{video_id}.fid"
+
+    def _chapters_path(self, video_id: str) -> Path:
+        return self.cache_dir / f"{video_id}.chapters.json"
 
     def _ensure_cache_dir(self) -> None:
         self.cache_dir.mkdir(parents=True, exist_ok=True)
@@ -98,6 +104,8 @@ class DiskCache(CacheBackend):
             await asyncio.to_thread(path.unlink)
         with contextlib.suppress(FileNotFoundError):
             await asyncio.to_thread(self._fid_path(video_id).unlink)
+        with contextlib.suppress(FileNotFoundError):
+            await asyncio.to_thread(self._chapters_path(video_id).unlink)
 
     async def get_file_id(self, video_id: str) -> str | None:
         """Return stored Telegram file_id or None if not stored."""
@@ -115,6 +123,29 @@ class DiskCache(CacheBackend):
             return
         self._ensure_cache_dir()
         await asyncio.to_thread(self._fid_path(video_id).write_text, file_id)
+
+    async def get_chapters(self, video_id: str) -> tuple[tuple[int, str], ...] | None:
+        """Return cached chapters from JSON sidecar, or None."""
+        validate_video_id(video_id)
+        path = self._chapters_path(video_id)
+        if not await asyncio.to_thread(path.exists):
+            return None
+        try:
+            text = await asyncio.to_thread(path.read_text)
+            data = json.loads(text)
+            return tuple((int(s), str(t)) for s, t in data)
+        except Exception:
+            logger.debug("Could not read chapters for %s", video_id, exc_info=True)
+            return None
+
+    async def store_chapters(
+        self, video_id: str, chapters: tuple[tuple[int, str], ...]
+    ) -> None:
+        """Persist chapters as a JSON sidecar file."""
+        validate_video_id(video_id)
+        self._ensure_cache_dir()
+        data = json.dumps(list(chapters))
+        await asyncio.to_thread(self._chapters_path(video_id).write_text, data)
 
     async def total_size_bytes(self) -> int:
         if not self.cache_dir.exists():
@@ -161,9 +192,10 @@ class DiskCache(CacheBackend):
                     await asyncio.to_thread(path.unlink)
                     total -= size
                     logger.info("DiskCache: evicted %s (LRU)", path.name)
-                    # Clean up orphaned .fid sidecar
-                    fid_path = path.with_suffix(".fid")
-                    with contextlib.suppress(FileNotFoundError):
-                        await asyncio.to_thread(fid_path.unlink)
+                    # Clean up orphaned sidecar files
+                    for suf in (".fid", ".chapters.json"):
+                        sidecar = path.with_suffix(suf)
+                        with contextlib.suppress(FileNotFoundError):
+                            await asyncio.to_thread(sidecar.unlink)
                 except FileNotFoundError:
                     pass

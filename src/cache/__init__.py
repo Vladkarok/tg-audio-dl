@@ -82,6 +82,14 @@ class CompositeCache(CacheBackend):
         """Delegate to disk cache (file_ids are local to this bot instance)."""
         await self.disk.store_file_id(video_id, file_id)
 
+    async def get_chapters(self, video_id: str) -> tuple[tuple[int, str], ...] | None:
+        return await self.disk.get_chapters(video_id)
+
+    async def store_chapters(
+        self, video_id: str, chapters: tuple[tuple[int, str], ...]
+    ) -> None:
+        await self.disk.store_chapters(video_id, chapters)
+
 
 # ---------------------------------------------------------------------------
 # Factory

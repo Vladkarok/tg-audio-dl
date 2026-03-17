@@ -295,9 +295,10 @@ class AudioDownloader:
         if raw_chapters:
             chapters = (
                 tuple(
-                    (int(ch["start_time"]), ch["title"])
+                    (max(0, int(ch["start_time"])), ch["title"])
                     for ch in raw_chapters
-                    if "start_time" in ch and "title" in ch
+                    if isinstance(ch.get("start_time"), (int, float))
+                    and isinstance(ch.get("title"), str)
                 )
                 or None
             )
