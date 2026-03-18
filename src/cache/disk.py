@@ -82,7 +82,7 @@ class DiskCache(CacheBackend):
         if path is None:
             return None
         # Update atime for LRU tracking
-        await asyncio.to_thread(os.utime, path, None)
+        os.utime(path, None)
         return path
 
     async def put(self, video_id: str, file_path: Path) -> Path:
@@ -96,7 +96,10 @@ class DiskCache(CacheBackend):
 
         # Try atomic rename first (same filesystem); fall back to chunked copy
         try:
-            await asyncio.to_thread(os.rename, file_path, dest)
+            # Same-filesystem rename is a tiny metadata update, so doing it
+            # inline keeps the fast path simple and avoids a threaded rename
+            # hang seen in some sandboxed runtimes.
+            os.rename(file_path, dest)
         except OSError as exc:
             if exc.errno != errno.EXDEV:
                 raise
@@ -113,7 +116,7 @@ class DiskCache(CacheBackend):
                 raise
             # Remove source to complete the cross-device "move"
             with contextlib.suppress(OSError):
-                await asyncio.to_thread(file_path.unlink)
+                file_path.unlink()
 
         await self.evict_lru_if_needed()
         return dest
@@ -128,19 +131,19 @@ class DiskCache(CacheBackend):
         path = self._locate_audio(video_id)
         if path is not None:
             with contextlib.suppress(FileNotFoundError):
-                await asyncio.to_thread(path.unlink)
+                path.unlink()
         with contextlib.suppress(FileNotFoundError):
-            await asyncio.to_thread(self._fid_path(video_id).unlink)
+            self._fid_path(video_id).unlink()
         with contextlib.suppress(FileNotFoundError):
-            await asyncio.to_thread(self._chapters_path(video_id).unlink)
+            self._chapters_path(video_id).unlink()
 
     async def get_file_id(self, video_id: str) -> str | None:
         """Return stored Telegram file_id or None if not stored."""
         validate_video_id(video_id)
         path = self._fid_path(video_id)
-        if not await asyncio.to_thread(path.exists):
+        if not path.exists():
             return None
-        return (await asyncio.to_thread(path.read_text)).strip()
+        return path.read_text().strip()
 
     async def store_file_id(self, video_id: str, file_id: str) -> None:
         """Persist a Telegram file_id for the given video_id."""
@@ -149,16 +152,16 @@ class DiskCache(CacheBackend):
             logger.warning("store_file_id: invalid file_id %r, skipping", file_id)
             return
         self._ensure_cache_dir()
-        await asyncio.to_thread(self._fid_path(video_id).write_text, file_id)
+        self._fid_path(video_id).write_text(file_id)
 
     async def get_chapters(self, video_id: str) -> tuple[tuple[int, str], ...] | None:
         """Return cached chapters from JSON sidecar, or None."""
         validate_video_id(video_id)
         path = self._chapters_path(video_id)
-        if not await asyncio.to_thread(path.exists):
+        if not path.exists():
             return None
         try:
-            text = await asyncio.to_thread(path.read_text)
+            text = path.read_text()
             data = json.loads(text)
             return tuple((int(s), str(t)) for s, t in data)
         except Exception:
@@ -172,14 +175,14 @@ class DiskCache(CacheBackend):
         validate_video_id(video_id)
         self._ensure_cache_dir()
         data = json.dumps(list(chapters))
-        await asyncio.to_thread(self._chapters_path(video_id).write_text, data)
+        self._chapters_path(video_id).write_text(data)
 
     async def total_size_bytes(self) -> int:
         paths = self._list_audio_files()
         total = 0
         for p in paths:
             try:
-                stat = await asyncio.to_thread(p.stat)
+                stat = p.stat()
                 total += stat.st_size
             except FileNotFoundError:
                 pass
@@ -201,7 +204,7 @@ class DiskCache(CacheBackend):
             stats: list[tuple[float, Path]] = []
             for p in paths:
                 try:
-                    stat = await asyncio.to_thread(p.stat)
+                    stat = p.stat()
                     stats.append((stat.st_atime, p))
                 except FileNotFoundError:
                     pass
@@ -213,8 +216,8 @@ class DiskCache(CacheBackend):
                 if total <= self.max_size_bytes:
                     break
                 try:
-                    size = (await asyncio.to_thread(path.stat)).st_size
-                    await asyncio.to_thread(path.unlink)
+                    size = path.stat().st_size
+                    path.unlink()
                     total -= size
                     logger.info("DiskCache: evicted %s (LRU)", path.name)
                     # Clean up orphaned sidecar files
@@ -222,7 +225,7 @@ class DiskCache(CacheBackend):
                     for suf in _SIDECAR_SUFFIXES:
                         sidecar = self.cache_dir / f"{video_id}{suf}"
                         with contextlib.suppress(FileNotFoundError):
-                            await asyncio.to_thread(sidecar.unlink)
+                            sidecar.unlink()
                 except FileNotFoundError:
                     pass
 
@@ -242,9 +245,9 @@ async def cleanup_stale_tmp(tmp_dir: Path, max_age_seconds: float) -> int:
         if not entry.is_file():
             continue
         try:
-            mtime = (await asyncio.to_thread(entry.stat)).st_mtime
+            mtime = entry.stat().st_mtime
             if now - mtime > max_age_seconds:
-                await asyncio.to_thread(entry.unlink)
+                entry.unlink()
                 deleted += 1
                 logger.debug("cleanup_stale_tmp: removed %s", entry.name)
         except FileNotFoundError:

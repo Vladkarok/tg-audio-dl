@@ -271,21 +271,24 @@ class TestDiskCacheFileId:
 class TestDiskCacheRaceConditions:
     async def test_total_size_tolerates_vanished_file(self, tmp_path: Path) -> None:
         """total_size_bytes() silently ignores a file that disappears mid-scan
-        (covers lines 103-104)."""
+        (covers the FileNotFoundError branch in total_size_bytes)."""
         cache = DiskCache(cache_dir=tmp_path / "race_cache", max_size_bytes=1024)
         _place_file_directly(cache, "dQw4w9WgXcQ", b"X" * 50)
+        target_name = "dQw4w9WgXcQ.m4a"
 
-        original_to_thread = asyncio.to_thread
+        path_type = type(cache.cache_dir / "dQw4w9WgXcQ.m4a")
+        original_stat = path_type.stat
         call_count = 0
 
-        async def _patched(fn, *args, **kwargs):
+        def _patched(self, *args, **kwargs):
             nonlocal call_count
-            call_count += 1
-            if call_count == 1:
+            if self.name == target_name:
+                call_count += 1
+            if self.name == target_name and call_count == 1:
                 raise FileNotFoundError("vanished during total_size scan")
-            return await original_to_thread(fn, *args, **kwargs)
+            return original_stat(self, *args, **kwargs)
 
-        with patch("src.cache.disk.asyncio.to_thread", _patched):
+        with patch.object(path_type, "stat", _patched):
             total = await cache.total_size_bytes()
 
         assert total == 0
@@ -294,53 +297,59 @@ class TestDiskCacheRaceConditions:
         self, tmp_path: Path
     ) -> None:
         """evict_lru_if_needed() skips files that vanish during stat collection
-        (covers lines 125-126: FileNotFoundError in the LRU gather-stats loop).
+        (covers FileNotFoundError in the LRU gather-stats loop).
 
         Call order when one oversize file is present:
           1: stat in total_size_bytes  → succeeds (total > limit)
-          2: stat in LRU gather loop   → raise FileNotFoundError (line 125-126)
+          2: stat in LRU gather loop   → raise FileNotFoundError
         """
         cache = DiskCache(cache_dir=tmp_path / "lru_race1", max_size_bytes=50)
         _place_file_directly(cache, "dQw4w9WgXcQ", b"X" * 100)
+        target_name = "dQw4w9WgXcQ.m4a"
 
-        original_to_thread = asyncio.to_thread
+        path_type = type(cache.cache_dir / "dQw4w9WgXcQ.m4a")
+        original_stat = path_type.stat
         call_count = 0
 
-        async def _patched(fn, *args, **kwargs):
+        def _patched(self, *args, **kwargs):
             nonlocal call_count
-            call_count += 1
-            if call_count == 2:
+            if self.name == target_name:
+                call_count += 1
+            if self.name == target_name and call_count == 2:
                 raise FileNotFoundError("gone during LRU stat collection")
-            return await original_to_thread(fn, *args, **kwargs)
+            return original_stat(self, *args, **kwargs)
 
-        with patch("src.cache.disk.asyncio.to_thread", _patched):
+        with patch.object(path_type, "stat", _patched):
             await cache.evict_lru_if_needed()  # must not raise
 
     async def test_evict_lru_tolerates_vanished_file_during_unlink(
         self, tmp_path: Path
     ) -> None:
         """evict_lru_if_needed() skips files that vanish just before unlink
-        (covers lines 139-140: FileNotFoundError in the eviction inner loop).
+        (covers FileNotFoundError in the eviction inner loop).
 
         Call order when one oversize file is present:
           1: stat in total_size_bytes  → succeeds (total > limit)
           2: stat in LRU gather loop   → succeeds (file added to stats list)
-          3: stat before unlink        → raise FileNotFoundError (line 139-140)
+          3: stat before unlink        → raise FileNotFoundError
         """
         cache = DiskCache(cache_dir=tmp_path / "lru_race2", max_size_bytes=50)
         _place_file_directly(cache, "dQw4w9WgXcQ", b"X" * 100)
+        target_name = "dQw4w9WgXcQ.m4a"
 
-        original_to_thread = asyncio.to_thread
+        path_type = type(cache.cache_dir / "dQw4w9WgXcQ.m4a")
+        original_stat = path_type.stat
         call_count = 0
 
-        async def _patched(fn, *args, **kwargs):
+        def _patched(self, *args, **kwargs):
             nonlocal call_count
-            call_count += 1
-            if call_count == 3:
+            if self.name == target_name:
+                call_count += 1
+            if self.name == target_name and call_count == 3:
                 raise FileNotFoundError("gone just before unlink")
-            return await original_to_thread(fn, *args, **kwargs)
+            return original_stat(self, *args, **kwargs)
 
-        with patch("src.cache.disk.asyncio.to_thread", _patched):
+        with patch.object(path_type, "stat", _patched):
             await cache.evict_lru_if_needed()  # must not raise
 
 
