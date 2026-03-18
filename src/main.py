@@ -4,6 +4,7 @@ from typing import Any
 from telegram.ext import (
     Application,
     ApplicationBuilder,
+    CallbackContext,
     CommandHandler,
     MessageHandler,
 )
@@ -11,6 +12,7 @@ from telegram.ext import (
 from src.bot.filters import MediaURLFilter
 from src.bot.handlers import handle_help, handle_start, handle_url
 from src.cache import create_cache
+from src.cache.disk import cleanup_stale_tmp
 from src.config import Settings, get_settings
 from src.downloader.client import AudioDownloader
 
@@ -43,6 +45,27 @@ async def post_init(application: Application[Any, Any, Any, Any, Any, Any]) -> N
         download_timeout=settings.DOWNLOAD_TIMEOUT_SECONDS,
     )
     (settings.CACHE_DIR / "tmp").mkdir(parents=True, exist_ok=True)
+
+    # Schedule periodic cleanup of stale tmp files
+    tmp_dir = settings.CACHE_DIR / "tmp"
+    max_age = settings.TMP_MAX_AGE_SECONDS
+    interval = settings.TMP_CLEANUP_INTERVAL_SECONDS
+
+    async def _cleanup_tmp_job(_context: CallbackContext) -> None:  # type: ignore[type-arg]
+        count = await cleanup_stale_tmp(tmp_dir, max_age)
+        if count:
+            logging.getLogger(__name__).info(
+                "Scheduled cleanup removed %d stale tmp file(s)", count
+            )
+
+    job_queue = application.job_queue
+    if job_queue is not None:
+        job_queue.run_repeating(
+            _cleanup_tmp_job,
+            interval=interval,
+            first=interval,
+            name="cleanup_stale_tmp",
+        )
 
     logging.getLogger(__name__).info("Bot initialized and ready")
 

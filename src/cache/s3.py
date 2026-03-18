@@ -21,9 +21,12 @@ logger = logging.getLogger(__name__)
 
 _S3_KEY_PREFIX = "audio/"
 
+# Audio extensions to probe when the extension is unknown, in priority order
+_AUDIO_EXTENSIONS = (".m4a", ".opus", ".webm", ".mp3", ".ogg")
 
-def _s3_key(video_id: str) -> str:
-    return f"{_S3_KEY_PREFIX}{video_id}.m4a"
+
+def _s3_key(video_id: str, suffix: str = ".m4a") -> str:
+    return f"{_S3_KEY_PREFIX}{video_id}{suffix}"
 
 
 class S3Cache(CacheBackend):
@@ -36,30 +39,60 @@ class S3Cache(CacheBackend):
         self._client = boto3.client("s3", region_name=region)
 
     # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _find_s3_key(self, video_id: str) -> str | None:
+        """Probe S3 for the first existing key across known audio extensions.
+
+        Checks .m4a first (most common), then other formats. Returns the full
+        S3 key or None if no object exists.
+        """
+        for ext in _AUDIO_EXTENSIONS:
+            key = _s3_key(video_id, ext)
+            try:
+                self._client.head_object(Bucket=self._bucket, Key=key)
+                return key
+            except ClientError as exc:
+                error_code = exc.response.get("Error", {}).get("Code", "")
+                if error_code in ("404", "NoSuchKey"):
+                    continue
+                # Unexpected error — stop probing
+                raise
+        return None
+
+    @staticmethod
+    def _extract_error(exc: ClientError) -> tuple[str, str]:
+        """Extract error code and message from a ClientError."""
+        error = exc.response.get("Error", {})
+        return error.get("Code", ""), error.get("Message", "")
+
+    # ------------------------------------------------------------------
     # CacheBackend interface
     # ------------------------------------------------------------------
 
     async def get(self, video_id: str) -> Path | None:
         """Download object from S3 to local_tmp_dir; return path or None."""
         validate_video_id(video_id)
-        local_path = self._local_tmp_dir / f"{video_id}.m4a"
 
-        def _download() -> None:
-            self._client.download_file(self._bucket, _s3_key(video_id), str(local_path))
+        def _download() -> Path | None:
+            key = self._find_s3_key(video_id)
+            if key is None:
+                return None
+            # Derive local extension from the discovered S3 key
+            suffix = Path(key).suffix
+            local_path = self._local_tmp_dir / f"{video_id}{suffix}"
+            self._client.download_file(self._bucket, key, str(local_path))
+            return local_path
 
         try:
-            await asyncio.to_thread(_download)
-            return local_path
+            return await asyncio.to_thread(_download)
         except ClientError as exc:
-            error_code = exc.response.get("Error", {}).get("Code", "")
-            if error_code in ("404", "NoSuchKey"):
+            code, msg = self._extract_error(exc)
+            if code in ("404", "NoSuchKey"):
                 return None
-            error_msg = exc.response.get("Error", {}).get("Message", "")
             logger.warning(
-                "S3Cache.get failed for %s: code=%s msg=%s",
-                video_id,
-                error_code,
-                error_msg,
+                "S3Cache.get failed for %s: code=%s msg=%s", video_id, code, msg
             )
             return None
         except Exception:
@@ -67,23 +100,20 @@ class S3Cache(CacheBackend):
             return None
 
     async def put(self, video_id: str, file_path: Path) -> Path:
-        """Upload *file_path* to S3; return original path on failure."""
+        """Upload *file_path* to S3 preserving extension; return original path."""
         validate_video_id(video_id)
+        key = _s3_key(video_id, file_path.suffix)
 
         def _upload() -> None:
-            self._client.upload_file(str(file_path), self._bucket, _s3_key(video_id))
+            self._client.upload_file(str(file_path), self._bucket, key)
 
         try:
             await asyncio.to_thread(_upload)
             return file_path
         except ClientError as exc:
-            error_code = exc.response.get("Error", {}).get("Code", "")
-            error_msg = exc.response.get("Error", {}).get("Message", "")
+            code, msg = self._extract_error(exc)
             logger.warning(
-                "S3Cache.put failed for %s: code=%s msg=%s",
-                video_id,
-                error_code,
-                error_msg,
+                "S3Cache.put failed for %s: code=%s msg=%s", video_id, code, msg
             )
             return file_path
         except Exception:
@@ -93,22 +123,15 @@ class S3Cache(CacheBackend):
     async def exists(self, video_id: str) -> bool:
         validate_video_id(video_id)
 
-        def _head() -> bool:
-            self._client.head_object(Bucket=self._bucket, Key=_s3_key(video_id))
-            return True
+        def _probe() -> bool:
+            return self._find_s3_key(video_id) is not None
 
         try:
-            return await asyncio.to_thread(_head)
+            return await asyncio.to_thread(_probe)
         except ClientError as exc:
-            error_code = exc.response.get("Error", {}).get("Code", "")
-            if error_code in ("404", "NoSuchKey"):
-                return False
-            error_msg = exc.response.get("Error", {}).get("Message", "")
+            code, msg = self._extract_error(exc)
             logger.warning(
-                "S3Cache.exists failed for %s: code=%s msg=%s",
-                video_id,
-                error_code,
-                error_msg,
+                "S3Cache.exists failed for %s: code=%s msg=%s", video_id, code, msg
             )
             return False
         except Exception:
@@ -119,18 +142,16 @@ class S3Cache(CacheBackend):
         validate_video_id(video_id)
 
         def _delete() -> None:
-            self._client.delete_object(Bucket=self._bucket, Key=_s3_key(video_id))
+            key = self._find_s3_key(video_id)
+            if key is not None:
+                self._client.delete_object(Bucket=self._bucket, Key=key)
 
         try:
             await asyncio.to_thread(_delete)
         except ClientError as exc:
-            error_code = exc.response.get("Error", {}).get("Code", "")
-            error_msg = exc.response.get("Error", {}).get("Message", "")
+            code, msg = self._extract_error(exc)
             logger.warning(
-                "S3Cache.evict failed for %s: code=%s msg=%s",
-                video_id,
-                error_code,
-                error_msg,
+                "S3Cache.evict failed for %s: code=%s msg=%s", video_id, code, msg
             )
         except Exception:
             logger.warning("S3Cache.evict failed for %s", video_id, exc_info=True)
@@ -154,13 +175,8 @@ class S3Cache(CacheBackend):
         try:
             return await asyncio.to_thread(_sum_sizes)
         except ClientError as exc:
-            error_code = exc.response.get("Error", {}).get("Code", "")
-            error_msg = exc.response.get("Error", {}).get("Message", "")
-            logger.warning(
-                "S3Cache.total_size_bytes failed: code=%s msg=%s",
-                error_code,
-                error_msg,
-            )
+            code, msg = self._extract_error(exc)
+            logger.warning("S3Cache.total_size_bytes failed: code=%s msg=%s", code, msg)
             return 0
         except Exception:
             logger.warning("S3Cache.total_size_bytes failed", exc_info=True)

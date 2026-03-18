@@ -16,7 +16,7 @@ import logging
 import time
 from pathlib import Path
 
-from mutagen.mp4 import MP4
+import mutagen
 from telegram import Bot, InputFile, Message, Update
 from telegram.ext import ContextTypes
 
@@ -215,7 +215,7 @@ async def _process_url(
                 fid_path = await cache.get(video_id)
                 fid_title = video_id
                 if fid_path:
-                    t, _ = _extract_m4a_metadata(fid_path)
+                    t, _ = _extract_audio_metadata(fid_path)
                     if t:
                         fid_title = clean_title(t) or video_id
                 fid_caption = _build_caption(fid_title, fid_chapters)
@@ -240,7 +240,7 @@ async def _process_url(
         cached_path: Path | None = await cache.get(video_id)
         if cached_path is None:
             return
-        cached_title, cached_artist = _extract_m4a_metadata(cached_path)
+        cached_title, cached_artist = _extract_audio_metadata(cached_path)
         cached_chapters = await cache.get_chapters(video_id)
         result = DownloadResult(
             file_path=cached_path,
@@ -328,17 +328,37 @@ async def _process_url(
     await progress.delete()
 
 
-def _extract_m4a_metadata(file_path: Path) -> tuple[str | None, str | None]:
-    """Extract title and artist from M4A tags. Returns (title, artist)."""
+def _extract_audio_metadata(file_path: Path) -> tuple[str | None, str | None]:
+    """Extract title and artist from audio tags. Returns (title, artist).
+
+    Supports M4A/MP4, Opus/Vorbis (webm/ogg), and MP3 (ID3) via mutagen
+    auto-detection.
+    """
     try:
-        tags = MP4(file_path).tags  # type: ignore[no-untyped-call]
-        if not tags:
+        audio = mutagen.File(file_path)  # type: ignore[attr-defined]
+        if audio is None or audio.tags is None:
             return None, None
-        title = tags.get("\xa9nam", [None])[0]
-        artist = tags.get("\xa9ART", [None])[0]
-        return title, artist
+        tags = audio.tags
+        # M4A / MP4
+        if hasattr(tags, "get") and "\xa9nam" in tags:
+            title = tags.get("\xa9nam", [None])[0]
+            artist = tags.get("\xa9ART", [None])[0]
+            return title, artist
+        # Vorbis (Opus, OGG, WebM)
+        if hasattr(tags, "get") and "title" in tags:
+            title = tags.get("title", [None])[0]
+            artist = tags.get("artist", [None])[0]
+            return title, artist
+        # ID3 (MP3)
+        if hasattr(tags, "getall"):
+            tit2 = tags.getall("TIT2")
+            tpe1 = tags.getall("TPE1")
+            title = str(tit2[0]) if tit2 else None
+            artist = str(tpe1[0]) if tpe1 else None
+            return title, artist
+        return None, None
     except Exception:
-        logger.debug("Could not read M4A metadata from %s", file_path, exc_info=True)
+        logger.debug("Could not read metadata from %s", file_path, exc_info=True)
         return None, None
 
 
@@ -399,11 +419,32 @@ def _build_caption(
 
 
 def _extract_thumbnail(file_path: Path) -> InputFile | None:
-    """Extract embedded cover art from an M4A file as an InputFile for Telegram."""
+    """Extract embedded cover art from an audio file as an InputFile for Telegram.
+
+    Supports M4A (covr tag), Opus/Vorbis (metadata_block_picture), and MP3 (APIC).
+    """
     try:
-        tags = MP4(file_path).tags  # type: ignore[no-untyped-call]
-        if tags and "covr" in tags and tags["covr"]:
+        audio = mutagen.File(file_path)  # type: ignore[attr-defined]
+        if audio is None or audio.tags is None:
+            return None
+        tags = audio.tags
+        # M4A / MP4: covr tag
+        if hasattr(tags, "get") and "covr" in tags and tags["covr"]:
             return InputFile(io.BytesIO(bytes(tags["covr"][0])), filename="cover.jpg")
+        # Vorbis (Opus/OGG): metadata_block_picture
+        if hasattr(tags, "get") and "metadata_block_picture" in tags:
+            import base64
+
+            from mutagen.flac import Picture
+
+            pic_data = base64.b64decode(tags["metadata_block_picture"][0])
+            picture = Picture(pic_data)  # type: ignore[no-untyped-call]
+            return InputFile(io.BytesIO(picture.data), filename="cover.jpg")
+        # ID3 (MP3): APIC frames
+        if hasattr(tags, "getall"):
+            apic_frames = tags.getall("APIC")
+            if apic_frames:
+                return InputFile(io.BytesIO(apic_frames[0].data), filename="cover.jpg")
     except Exception:
         logger.debug("Could not extract thumbnail from %s", file_path, exc_info=True)
     return None
@@ -429,7 +470,7 @@ async def _send_audio(
             performer=result.artist,
             duration=result.duration_seconds,
             caption=_build_caption(display_title, result.chapters),
-            filename=f"{safe_filename}.m4a",
+            filename=f"{safe_filename}{result.file_path.suffix}",
             read_timeout=300,
             write_timeout=300,
         )

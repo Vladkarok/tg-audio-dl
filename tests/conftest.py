@@ -23,6 +23,8 @@ def clear_env_vars(monkeypatch):
         "RATE_LIMIT_PER_MINUTE",
         "PROXY_URL",
         "DOWNLOAD_TIMEOUT_SECONDS",
+        "TMP_MAX_AGE_SECONDS",
+        "TMP_CLEANUP_INTERVAL_SECONDS",
     ]
     for var in vars_to_clear:
         monkeypatch.delenv(var, raising=False)

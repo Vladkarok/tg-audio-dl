@@ -770,3 +770,59 @@ class TestExtractMediaURLs:
         results = extract_media_urls(text)
         assert len(results) == 1
         assert results[0].url_type == URLType.PLAYLIST
+
+
+# ===========================================================================
+# extract_media_urls — ordering by position of appearance
+# ===========================================================================
+
+
+class TestExtractMediaUrlsOrdering:
+    """Verify extract_media_urls() returns URLs in source-text order,
+    regardless of which platform each URL belongs to."""
+
+    def test_soundcloud_before_youtube_returns_sc_first(self):
+        """SC URL appears first in the text; it must be first in the result."""
+        text = (
+            f"https://soundcloud.com/{SC_ARTIST}/{SC_TRACK} "
+            f"https://www.youtube.com/watch?v={VIDEO_ID}"
+        )
+        results = extract_media_urls(text)
+        assert len(results) == 2
+        assert results[0].platform == Platform.SOUNDCLOUD
+        assert results[1].platform == Platform.YOUTUBE
+
+    def test_youtube_before_soundcloud_returns_yt_first(self):
+        """YT URL appears first in the text; it must be first in the result."""
+        text = (
+            f"https://www.youtube.com/watch?v={VIDEO_ID} "
+            f"https://soundcloud.com/{SC_ARTIST}/{SC_TRACK}"
+        )
+        results = extract_media_urls(text)
+        assert len(results) == 2
+        assert results[0].platform == Platform.YOUTUBE
+        assert results[1].platform == Platform.SOUNDCLOUD
+
+    def test_interleaved_three_urls_preserves_order(self):
+        """SC, YT, SC interleaved: result order must match text order."""
+        sc_url_1 = f"https://soundcloud.com/{SC_ARTIST}/{SC_TRACK}"
+        yt_url = f"https://www.youtube.com/watch?v={VIDEO_ID}"
+        sc_url_2 = f"https://soundcloud.com/{SC_ARTIST}/sets/{SC_SET}"
+        text = f"{sc_url_1} then {yt_url} finally {sc_url_2}"
+        results = extract_media_urls(text)
+        assert len(results) == 3
+        assert results[0].platform == Platform.SOUNDCLOUD
+        assert results[0].url_type == URLType.SINGLE
+        assert results[1].platform == Platform.YOUTUBE
+        assert results[2].platform == Platform.SOUNDCLOUD
+        assert results[2].url_type == URLType.PLAYLIST
+
+    def test_single_platform_order_unchanged(self):
+        """Two YouTube URLs: order must be preserved (regression guard)."""
+        yt_url_1 = f"https://www.youtube.com/watch?v={VIDEO_ID}"
+        yt_url_2 = "https://youtu.be/AbCdEfG1234"
+        text = f"{yt_url_1} and {yt_url_2}"
+        results = extract_media_urls(text)
+        assert len(results) == 2
+        assert results[0].video_id == VIDEO_ID
+        assert results[1].video_id == "AbCdEfG1234"

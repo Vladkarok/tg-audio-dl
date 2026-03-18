@@ -341,15 +341,22 @@ def extract_media_urls(text: str) -> list[ParsedURL]:
     if not text:
         return []
 
-    results: list[ParsedURL] = []
-
+    # Collect (position, raw_url, platform) for every match across both regexes
+    candidates: list[tuple[int, str, str]] = []
     for match in _YT_URL_RE.finditer(text):
-        parsed = parse_youtube_url(match.group(0))
-        if parsed is not None:
-            results.append(parsed)
-
+        candidates.append((match.start(), match.group(0), "youtube"))
     for match in _SC_URL_RE.finditer(text):
-        parsed = parse_soundcloud_url(match.group(0))
+        candidates.append((match.start(), match.group(0), "soundcloud"))
+
+    # Sort by position to preserve order of appearance in the source text
+    candidates.sort(key=lambda c: c[0])
+
+    results: list[ParsedURL] = []
+    for _pos, raw_url, platform in candidates:
+        if platform == "youtube":
+            parsed = parse_youtube_url(raw_url)
+        else:
+            parsed = parse_soundcloud_url(raw_url)
         if parsed is not None:
             results.append(parsed)
 

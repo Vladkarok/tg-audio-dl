@@ -387,3 +387,117 @@ class TestStoreFileIdValidation:
         await cache.store_file_id("vid1", "../../etc/passwd")
         # Should not be stored
         assert await cache.get_file_id("vid1") is None
+
+
+# ---------------------------------------------------------------------------
+# Multi-format extension preservation
+# ---------------------------------------------------------------------------
+
+
+class TestDiskCacheExtensionPreservation:
+    """Verify cache preserves the actual audio extension, not just .m4a."""
+
+    @pytest.mark.parametrize("ext", [".opus", ".webm", ".mp3", ".ogg", ".m4a"])
+    async def test_put_preserves_extension(self, tmp_path: Path, ext: str) -> None:
+        cache = DiskCache(cache_dir=tmp_path / "cache", max_size_bytes=10**9)
+        src = tmp_path / f"audio{ext}"
+        src.write_bytes(b"fake audio data")
+        result = await cache.put("testvid123", src)
+        assert result.suffix == ext
+        assert result.name == f"testvid123{ext}"
+
+    async def test_get_finds_opus_file(self, tmp_path: Path) -> None:
+        cache = DiskCache(cache_dir=tmp_path / "cache", max_size_bytes=10**9)
+        src = tmp_path / "audio.opus"
+        src.write_bytes(b"opus data")
+        await cache.put("opusvid123", src)
+        result = await cache.get("opusvid123")
+        assert result is not None
+        assert result.suffix == ".opus"
+
+    async def test_exists_finds_webm_file(self, tmp_path: Path) -> None:
+        cache = DiskCache(cache_dir=tmp_path / "cache", max_size_bytes=10**9)
+        src = tmp_path / "audio.webm"
+        src.write_bytes(b"webm data")
+        await cache.put("webmvid123", src)
+        assert await cache.exists("webmvid123") is True
+
+    async def test_evict_removes_mp3_file(self, tmp_path: Path) -> None:
+        cache = DiskCache(cache_dir=tmp_path / "cache", max_size_bytes=10**9)
+        src = tmp_path / "audio.mp3"
+        src.write_bytes(b"mp3 data")
+        await cache.put("mp3vid1234", src)
+        await cache.evict("mp3vid1234")
+        assert await cache.exists("mp3vid1234") is False
+
+    async def test_total_size_counts_all_extensions(self, tmp_path: Path) -> None:
+        cache = DiskCache(cache_dir=tmp_path / "cache", max_size_bytes=10**9)
+        for ext, vid in [
+            (".m4a", "vid1vid1vid"),
+            (".opus", "vid2vid2vid"),
+            (".mp3", "vid3vid3vid"),
+        ]:
+            src = tmp_path / f"a{ext}"
+            src.write_bytes(b"X" * 100)
+            await cache.put(vid, src)
+        total = await cache.total_size_bytes()
+        assert total == 300
+
+    async def test_lru_eviction_works_across_extensions(self, tmp_path: Path) -> None:
+        """LRU eviction should consider files of all extensions."""
+        cache = DiskCache(cache_dir=tmp_path / "cache", max_size_bytes=250)
+        # Put two files of different formats
+        for ext, vid in [(".opus", "AAAAAAAAAAA"), (".mp3", "BBBBBBBBBBB")]:
+            src = tmp_path / f"a{ext}"
+            src.write_bytes(b"X" * 100)
+            await cache.put(vid, src)
+
+        import asyncio
+
+        await asyncio.sleep(0.01)
+        await cache.get("AAAAAAAAAAA")  # touch first to make it MRU
+        await asyncio.sleep(0.01)
+
+        # Third file pushes over limit
+        src = tmp_path / "a.m4a"
+        src.write_bytes(b"X" * 100)
+        await cache.put("CCCCCCCCCCC", src)
+
+        assert not await cache.exists("BBBBBBBBBBB")
+        assert await cache.exists("AAAAAAAAAAA")
+        assert await cache.exists("CCCCCCCCCCC")
+
+
+# ---------------------------------------------------------------------------
+# cleanup_stale_tmp
+# ---------------------------------------------------------------------------
+
+
+class TestCleanupStaleTmp:
+    async def test_removes_old_files(self, tmp_path: Path) -> None:
+        from src.cache.disk import cleanup_stale_tmp
+
+        old_file = tmp_path / "old.m4a"
+        old_file.write_bytes(b"old")
+        # Set mtime to 2 hours ago
+        import os
+        import time
+
+        old_time = time.time() - 7200
+        os.utime(old_file, (old_time, old_time))
+
+        new_file = tmp_path / "new.m4a"
+        new_file.write_bytes(b"new")
+
+        count = await cleanup_stale_tmp(tmp_path, max_age_seconds=3600)
+        assert count == 1
+        assert not old_file.exists()
+        assert new_file.exists()
+
+    async def test_returns_zero_for_nonexistent_dir(self) -> None:
+        from pathlib import Path
+
+        from src.cache.disk import cleanup_stale_tmp
+
+        count = await cleanup_stale_tmp(Path("/nonexistent/dir"), max_age_seconds=3600)
+        assert count == 0

@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import re
+import time
 from pathlib import Path
 
 import aiofiles
@@ -19,13 +20,19 @@ CHUNK_SIZE = 256 * 1024  # 256 KB
 # Telegram file_ids are Base64-encoded and may contain A-Z, a-z, 0-9, _, -, =, .
 _FILE_ID_RE = re.compile(r"^[A-Za-z0-9_\-.=]{1,512}$")
 
+# Audio extensions supported by yt-dlp output, in priority order for discovery
+_AUDIO_EXTENSIONS = (".m4a", ".opus", ".webm", ".mp3", ".ogg")
+# Sidecar suffixes that are not audio files
+_SIDECAR_SUFFIXES = frozenset((".fid", ".chapters.json"))
+
 logger = logging.getLogger(__name__)
 
 
 class DiskCache(CacheBackend):
     """File-system backed cache with LRU eviction.
 
-    Files are stored as ``{cache_dir}/{video_id}.m4a``.
+    Files are stored as ``{cache_dir}/{video_id}.{ext}`` where ext is the
+    actual audio format (m4a, opus, webm, etc.).
     Access time (atime) is used to track LRU order.
     """
 
@@ -38,8 +45,13 @@ class DiskCache(CacheBackend):
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _path_for(self, video_id: str) -> Path:
-        return self.cache_dir / f"{video_id}.m4a"
+    def _locate_audio(self, video_id: str) -> Path | None:
+        """Find an existing cached audio file for *video_id*, any extension."""
+        for ext in _AUDIO_EXTENSIONS:
+            candidate = self.cache_dir / f"{video_id}{ext}"
+            if candidate.exists():
+                return candidate
+        return None
 
     def _fid_path(self, video_id: str) -> Path:
         return self.cache_dir / f"{video_id}.fid"
@@ -50,6 +62,15 @@ class DiskCache(CacheBackend):
     def _ensure_cache_dir(self) -> None:
         self.cache_dir.mkdir(parents=True, exist_ok=True)
 
+    def _list_audio_files(self) -> list[Path]:
+        """Return all cached audio files (any supported extension)."""
+        if not self.cache_dir.exists():
+            return []
+        result: list[Path] = []
+        for ext in _AUDIO_EXTENSIONS:
+            result.extend(self.cache_dir.glob(f"*{ext}"))
+        return result
+
     # ------------------------------------------------------------------
     # CacheBackend interface
     # ------------------------------------------------------------------
@@ -57,18 +78,21 @@ class DiskCache(CacheBackend):
     async def get(self, video_id: str) -> Path | None:
         """Return cached path and update access time, or None if missing."""
         validate_video_id(video_id)
-        path = self._path_for(video_id)
-        if not path.exists():
+        path = self._locate_audio(video_id)
+        if path is None:
             return None
         # Update atime for LRU tracking
         await asyncio.to_thread(os.utime, path, None)
         return path
 
     async def put(self, video_id: str, file_path: Path) -> Path:
-        """Move or copy *file_path* into cache; trigger LRU eviction if needed."""
+        """Move or copy *file_path* into cache; trigger LRU eviction if needed.
+
+        The returned path preserves the extension of *file_path*.
+        """
         validate_video_id(video_id)
         self._ensure_cache_dir()
-        dest = self._path_for(video_id)
+        dest = self.cache_dir / f"{video_id}{file_path.suffix}"
 
         # Try atomic rename first (same filesystem); fall back to chunked copy
         try:
@@ -96,13 +120,15 @@ class DiskCache(CacheBackend):
 
     async def exists(self, video_id: str) -> bool:
         validate_video_id(video_id)
-        return self._path_for(video_id).exists()
+        return self._locate_audio(video_id) is not None
 
     async def evict(self, video_id: str) -> None:
         validate_video_id(video_id)
-        path = self._path_for(video_id)
-        with contextlib.suppress(FileNotFoundError):
-            await asyncio.to_thread(path.unlink)
+        # Remove any audio file regardless of extension
+        path = self._locate_audio(video_id)
+        if path is not None:
+            with contextlib.suppress(FileNotFoundError):
+                await asyncio.to_thread(path.unlink)
         with contextlib.suppress(FileNotFoundError):
             await asyncio.to_thread(self._fid_path(video_id).unlink)
         with contextlib.suppress(FileNotFoundError):
@@ -149,9 +175,7 @@ class DiskCache(CacheBackend):
         await asyncio.to_thread(self._chapters_path(video_id).write_text, data)
 
     async def total_size_bytes(self) -> int:
-        if not self.cache_dir.exists():
-            return 0
-        paths = list(self.cache_dir.glob("*.m4a"))
+        paths = self._list_audio_files()
         total = 0
         for p in paths:
             try:
@@ -172,8 +196,8 @@ class DiskCache(CacheBackend):
             if total <= self.max_size_bytes:
                 return
 
-            # Collect (atime, path) for all cached files
-            paths = list(self.cache_dir.glob("*.m4a"))
+            # Collect (atime, path) for all cached audio files
+            paths = self._list_audio_files()
             stats: list[tuple[float, Path]] = []
             for p in paths:
                 try:
@@ -194,9 +218,37 @@ class DiskCache(CacheBackend):
                     total -= size
                     logger.info("DiskCache: evicted %s (LRU)", path.name)
                     # Clean up orphaned sidecar files
-                    for suf in (".fid", ".chapters.json"):
-                        sidecar = path.with_suffix(suf)
+                    video_id = path.stem
+                    for suf in _SIDECAR_SUFFIXES:
+                        sidecar = self.cache_dir / f"{video_id}{suf}"
                         with contextlib.suppress(FileNotFoundError):
                             await asyncio.to_thread(sidecar.unlink)
                 except FileNotFoundError:
                     pass
+
+
+# ---------------------------------------------------------------------------
+# Stale tmp cleanup
+# ---------------------------------------------------------------------------
+
+
+async def cleanup_stale_tmp(tmp_dir: Path, max_age_seconds: float) -> int:
+    """Delete files in *tmp_dir* older than *max_age_seconds*. Returns count."""
+    if not tmp_dir.exists():
+        return 0
+    now = time.time()
+    deleted = 0
+    for entry in tmp_dir.iterdir():
+        if not entry.is_file():
+            continue
+        try:
+            mtime = (await asyncio.to_thread(entry.stat)).st_mtime
+            if now - mtime > max_age_seconds:
+                await asyncio.to_thread(entry.unlink)
+                deleted += 1
+                logger.debug("cleanup_stale_tmp: removed %s", entry.name)
+        except FileNotFoundError:
+            pass
+    if deleted:
+        logger.info("cleanup_stale_tmp: removed %d stale file(s)", deleted)
+    return deleted

@@ -6,22 +6,26 @@ Run directly in the container to diagnose issues without deploying:
     docker exec youtube-download-bot-bot-1 python3 /app/scripts/smoke_test.py
 
 Or from the host:
-    ssh your-server "docker exec youtube-download-bot-bot-1 python3 /app/scripts/smoke_test.py"
+    ssh your-server "docker exec youtube-download-bot-bot-1 \
+        python3 /app/scripts/smoke_test.py"
 """
 
 import os
 import shutil
+import socket
 import sys
+import urllib.parse
 
-TEST_URL = "https://www.youtube.com/watch?v=jNQXAC9IVRw"  # "Me at the zoo" — first YT video, always public
+# "Me at the zoo" — first YT video, always public
+TEST_URL = "https://www.youtube.com/watch?v=jNQXAC9IVRw"
 
-PASS = "\033[92m✓\033[0m"
+ICON_OK = "\033[92m✓\033[0m"
 FAIL = "\033[91m✗\033[0m"
 WARN = "\033[93m!\033[0m"
 
 
 def check(label: str, ok: bool, detail: str = "") -> bool:
-    icon = PASS if ok else FAIL
+    icon = ICON_OK if ok else FAIL
     print(f"  {icon} {label}" + (f": {detail}" if detail else ""))
     return ok
 
@@ -43,6 +47,7 @@ def main() -> int:
     # --- 3. yt-dlp importable ---
     try:
         import yt_dlp
+
         check("yt-dlp importable", True, yt_dlp.version.__version__)
     except ImportError as e:
         check("yt-dlp importable", False, str(e))
@@ -57,6 +62,37 @@ def main() -> int:
     else:
         check("PROXY_URL configured", False, "not set")
         print(f"  {WARN} Datacenter IPs need a proxy. Set PROXY_URL in .env")
+
+    # --- 4a. SOCKS5 handshake (only for socks5:// proxies) ---
+    if proxy_url and urllib.parse.urlparse(proxy_url).scheme in (
+        "socks5",
+        "socks5h",
+    ):
+        parsed = urllib.parse.urlparse(proxy_url)
+        proxy_host = parsed.hostname or ""
+        proxy_port = parsed.port or 1080
+        socks5_ok = False
+        socks5_detail = ""
+        try:
+            with socket.create_connection((proxy_host, proxy_port), timeout=5) as sock:
+                # SOCKS5 greeting: VER=5, NMETHODS=1, METHOD=0 (no auth)
+                sock.sendall(b"\x05\x01\x00")
+                reply = sock.recv(2)
+                if len(reply) < 2:
+                    socks5_detail = f"short reply ({reply!r})"
+                elif reply[0] != 0x05:
+                    socks5_detail = f"unexpected VER byte: 0x{reply[0]:02x}"
+                elif reply[1] != 0x00:
+                    socks5_detail = (
+                        f"server chose auth method 0x{reply[1]:02x}, expected 0x00"
+                    )
+                else:
+                    socks5_ok = True
+                    socks5_detail = f"{proxy_host}:{proxy_port} accepted no-auth"
+        except OSError as exc:
+            socks5_detail = str(exc)
+        if not check("SOCKS5 handshake", socks5_ok, socks5_detail):
+            failures += 1
 
     # --- 5. Extraction check (no download) ---
     print("\n  Testing yt-dlp extract (no download)...")
@@ -93,7 +129,7 @@ def main() -> int:
     # --- Summary ---
     print()
     if failures == 0:
-        print(f"{PASS} All checks passed — bot should be working.\n")
+        print(f"{ICON_OK} All checks passed — bot should be working.\n")
     else:
         print(f"{FAIL} {failures} check(s) failed — see above.\n")
     return failures

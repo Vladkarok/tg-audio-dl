@@ -48,6 +48,8 @@ class Settings(BaseSettings):
     PLAYLIST_MAX_TRACKS: int = 50
     RATE_LIMIT_PER_MINUTE: int = 5
     DOWNLOAD_TIMEOUT_SECONDS: int = 1800
+    TMP_MAX_AGE_SECONDS: int = 3600
+    TMP_CLEANUP_INTERVAL_SECONDS: int = 900
 
     @classmethod
     def settings_customise_sources(
@@ -120,6 +122,20 @@ class Settings(BaseSettings):
     def validate_download_timeout(cls, v: int) -> int:
         if v < 1:
             raise ValueError("DOWNLOAD_TIMEOUT_SECONDS must be at least 1")
+        return v
+
+    @field_validator("TMP_MAX_AGE_SECONDS")
+    @classmethod
+    def validate_tmp_max_age(cls, v: int) -> int:
+        if v < 60:
+            raise ValueError("TMP_MAX_AGE_SECONDS must be at least 60")
+        return v
+
+    @field_validator("TMP_CLEANUP_INTERVAL_SECONDS")
+    @classmethod
+    def validate_tmp_cleanup_interval(cls, v: int) -> int:
+        if v < 60:
+            raise ValueError("TMP_CLEANUP_INTERVAL_SECONDS must be at least 60")
         return v
 
     @field_validator("LOG_LEVEL")

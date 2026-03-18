@@ -428,3 +428,31 @@ class TestNumericValidators:
 
         s = Settings()
         assert s.DOWNLOAD_TIMEOUT_SECONDS == 900
+
+    def test_tmp_max_age_too_low_rejected(self, monkeypatch):
+        monkeypatch.setenv("TMP_MAX_AGE_SECONDS", "10")
+        from src.config import Settings
+
+        with pytest.raises((ValidationError, ValueError)):
+            Settings()
+
+    def test_tmp_max_age_valid_accepted(self, monkeypatch):
+        monkeypatch.setenv("TMP_MAX_AGE_SECONDS", "7200")
+        from src.config import Settings
+
+        s = Settings()
+        assert s.TMP_MAX_AGE_SECONDS == 7200
+
+    def test_tmp_cleanup_interval_too_low_rejected(self, monkeypatch):
+        monkeypatch.setenv("TMP_CLEANUP_INTERVAL_SECONDS", "0")
+        from src.config import Settings
+
+        with pytest.raises((ValidationError, ValueError)):
+            Settings()
+
+    def test_tmp_cleanup_interval_valid_accepted(self, monkeypatch):
+        monkeypatch.setenv("TMP_CLEANUP_INTERVAL_SECONDS", "300")
+        from src.config import Settings
+
+        s = Settings()
+        assert s.TMP_CLEANUP_INTERVAL_SECONDS == 300
