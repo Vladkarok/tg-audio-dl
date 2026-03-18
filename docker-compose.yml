@@ -52,6 +52,12 @@ services:
       - /tmp:size=512m,noexec,nosuid,nodev
     cap_drop:
       - ALL
+    healthcheck:
+      test: ["CMD-SHELL", "python -c 'import os, sys; sys.exit(0 if os.path.exists(\"/proc/1/status\") else 1)'"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
     mem_limit: 512m
     cpus: "1.5"
     # No ports — bot only needs outbound connections
