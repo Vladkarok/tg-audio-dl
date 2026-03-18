@@ -437,7 +437,7 @@ def _resize_thumbnail(raw: bytes) -> bytes:
     img = Image.open(io.BytesIO(raw))
     if img.width <= _THUMB_MAX_SIZE and img.height <= _THUMB_MAX_SIZE:
         return raw
-    img.thumbnail((_THUMB_MAX_SIZE, _THUMB_MAX_SIZE), Image.LANCZOS)
+    img.thumbnail((_THUMB_MAX_SIZE, _THUMB_MAX_SIZE), Image.Resampling.LANCZOS)
     buf = io.BytesIO()
     img.save(buf, format="JPEG", quality=_THUMB_QUALITY)
     return buf.getvalue()
