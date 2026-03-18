@@ -17,6 +17,7 @@ import time
 from pathlib import Path
 
 import mutagen
+from PIL import Image
 from telegram import Bot, InputFile, Message, Update
 from telegram.ext import ContextTypes
 
@@ -424,33 +425,58 @@ def _build_caption(
     return base + "\n".join(included) + suffix
 
 
+_THUMB_MAX_SIZE = 320  # Telegram max thumbnail dimension (px)
+_THUMB_QUALITY = 80  # JPEG quality for resized thumbnails
+
+
+def _resize_thumbnail(raw: bytes) -> bytes:
+    """Resize cover art to fit Telegram's 320x320 thumbnail limit.
+
+    Returns JPEG bytes. If the image is already small enough, returns it as-is.
+    """
+    img = Image.open(io.BytesIO(raw))
+    if img.width <= _THUMB_MAX_SIZE and img.height <= _THUMB_MAX_SIZE:
+        return raw
+    img.thumbnail((_THUMB_MAX_SIZE, _THUMB_MAX_SIZE), Image.LANCZOS)
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=_THUMB_QUALITY)
+    return buf.getvalue()
+
+
 def _extract_thumbnail(file_path: Path) -> InputFile | None:
     """Extract embedded cover art from an audio file as an InputFile for Telegram.
 
     Supports M4A (covr tag), Opus/Vorbis (metadata_block_picture), and MP3 (APIC).
+    Images are resized to max 320x320 to comply with Telegram's thumbnail limits.
     """
     try:
         audio = mutagen.File(file_path)  # type: ignore[attr-defined]
         if audio is None or audio.tags is None:
             return None
         tags = audio.tags
+        raw: bytes | None = None
         # M4A / MP4: covr tag
         if hasattr(tags, "get") and "covr" in tags and tags["covr"]:
-            return InputFile(io.BytesIO(bytes(tags["covr"][0])), filename="cover.jpg")
+            raw = bytes(tags["covr"][0])
         # Vorbis (Opus/OGG): metadata_block_picture
-        if hasattr(tags, "get") and "metadata_block_picture" in tags:
+        elif hasattr(tags, "get") and "metadata_block_picture" in tags:
             import base64
 
             from mutagen.flac import Picture
 
             pic_data = base64.b64decode(tags["metadata_block_picture"][0])
             picture = Picture(pic_data)  # type: ignore[no-untyped-call]
-            return InputFile(io.BytesIO(picture.data), filename="cover.jpg")
+            raw = picture.data
         # ID3 (MP3): APIC frames
-        if hasattr(tags, "getall"):
+        elif hasattr(tags, "getall"):
             apic_frames = tags.getall("APIC")
             if apic_frames:
-                return InputFile(io.BytesIO(apic_frames[0].data), filename="cover.jpg")
+                raw = apic_frames[0].data
+
+        if raw is None:
+            return None
+        resized = _resize_thumbnail(raw)
+        return InputFile(io.BytesIO(resized), filename="cover.jpg")
     except Exception:
         logger.debug("Could not extract thumbnail from %s", file_path, exc_info=True)
     return None
