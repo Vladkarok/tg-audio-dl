@@ -26,9 +26,6 @@ RUN groupadd --gid 10001 botuser && \
 
 WORKDIR /app
 
-# Copy uv binary
-COPY --from=ghcr.io/astral-sh/uv:0.6.6 /uv /usr/local/bin/uv
-
 # Copy installed deps from builder
 COPY --from=builder /app/.venv /app/.venv
 
