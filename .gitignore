@@ -40,6 +40,9 @@ coverage.xml
 *.mp4
 *.webm
 
+# Claude Code
+.claude/
+
 # OS
 .DS_Store
 Thumbs.db
