@@ -33,7 +33,7 @@ class StepStatus(Enum):
 
 
 _STATUS_ICONS: dict[StepStatus, str] = {
-    StepStatus.PENDING: "◻️",
+    StepStatus.PENDING: "⏳",
     StepStatus.ACTIVE: "⏳",
     StepStatus.DONE: "✅",
     StepStatus.ERROR: "❌",
@@ -42,8 +42,8 @@ _STATUS_ICONS: dict[StepStatus, str] = {
 _STEP_ACTIVE_ICONS: dict[Step, str] = {
     Step.RECEIVED: "⏳",
     Step.DOWNLOADING: "⬇️",
-    Step.PROCESSING: "⚙️",
-    Step.UPLOADING: "📤",
+    Step.PROCESSING: "🔄",
+    Step.UPLOADING: "⬆️",
 }
 
 STEP_LABELS: dict[Step, str] = {
