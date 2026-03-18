@@ -352,10 +352,10 @@ def extract_media_urls(text: str) -> list[ParsedURL]:
     # Collect (position, raw_url, platform) for every match across both regexes
     candidates: list[tuple[int, str, str]] = []
     for match in _YT_URL_RE.finditer(text):
-        url = match.group(0).rstrip(")")  # strip trailing paren from markdown
+        url = match.group(0).removesuffix(")")  # strip one trailing paren (markdown)
         candidates.append((match.start(), url, "youtube"))
     for match in _SC_URL_RE.finditer(text):
-        url = match.group(0).rstrip(")")
+        url = match.group(0).removesuffix(")")
         candidates.append((match.start(), url, "soundcloud"))
 
     # Sort by position to preserve order of appearance in the source text
