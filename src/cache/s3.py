@@ -9,6 +9,7 @@ All S3 errors are caught and logged; operations degrade gracefully
 """
 
 import asyncio
+import contextlib
 import logging
 from collections.abc import Callable
 from pathlib import Path
@@ -117,6 +118,12 @@ class S3Cache(CacheBackend):
         key = _s3_key(video_id, file_path.suffix)
 
         def _upload() -> None:
+            # Remove any existing variant with a different extension so stale
+            # objects don't shadow the new one during fixed-order probes.
+            old_key = self._find_s3_key(video_id)
+            if old_key is not None and old_key != key:
+                with contextlib.suppress(ClientError):
+                    self._client.delete_object(Bucket=self._bucket, Key=old_key)
             self._client.upload_file(str(file_path), self._bucket, key)
 
         try:

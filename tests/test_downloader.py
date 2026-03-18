@@ -1117,3 +1117,50 @@ class TestInflightDedup:
 
         # All three must be fully serialized
         assert call_order == ["enter", "exit", "enter", "exit", "enter", "exit"]
+
+
+# ===========================================================================
+# Playlist sparse / None entries
+# ===========================================================================
+
+
+class TestPlaylistSparseEntries:
+    """Playlist downloads should skip None and incomplete entries."""
+
+    async def test_none_entry_skipped(self, tmp_path: Path) -> None:
+        """None entry in playlist should be skipped, not crash."""
+        good_entry = FAKE_PLAYLIST_ENTRIES[0]
+        _create_fake_m4a(tmp_path, good_entry["id"])
+
+        info_with_none = {
+            **FAKE_PLAYLIST_INFO,
+            "entries": [None, good_entry, None],
+        }
+        mock_ydl = _make_ydl_mock(info_with_none)
+
+        downloader = AudioDownloader(download_dir=tmp_path, max_file_size_bytes=10**9)
+
+        with patch("src.downloader.client.yt_dlp.YoutubeDL", return_value=mock_ydl):
+            results = await downloader.download(_make_parsed_playlist())
+
+        assert len(results) == 1
+        assert results[0].video_id == good_entry["id"]
+
+    async def test_entry_without_id_skipped(self, tmp_path: Path) -> None:
+        """Entry missing 'id' key should be skipped."""
+        good_entry = FAKE_PLAYLIST_ENTRIES[0]
+        _create_fake_m4a(tmp_path, good_entry["id"])
+        bad_entry = {"title": "No ID track"}
+
+        info = {
+            **FAKE_PLAYLIST_INFO,
+            "entries": [bad_entry, good_entry],
+        }
+        mock_ydl = _make_ydl_mock(info)
+
+        downloader = AudioDownloader(download_dir=tmp_path, max_file_size_bytes=10**9)
+
+        with patch("src.downloader.client.yt_dlp.YoutubeDL", return_value=mock_ydl):
+            results = await downloader.download(_make_parsed_playlist())
+
+        assert len(results) == 1

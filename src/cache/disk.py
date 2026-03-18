@@ -94,6 +94,13 @@ class DiskCache(CacheBackend):
         self._ensure_cache_dir()
         dest = self.cache_dir / f"{video_id}{file_path.suffix}"
 
+        # Remove any existing variant with a different extension so stale
+        # files don't shadow the new one during fixed-order extension probes.
+        old = self._locate_audio(video_id)
+        if old is not None and old.suffix != file_path.suffix:
+            with contextlib.suppress(OSError):
+                old.unlink()
+
         # Try atomic rename first (same filesystem); fall back to chunked copy
         try:
             # Same-filesystem rename is a tiny metadata update, so doing it

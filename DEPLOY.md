@@ -156,7 +156,12 @@ ssh -D 1080 -f -N -o ServerAliveInterval=60 user@your-home-ip
 Add to `.env`:
 
 ```bash
+# If running OUTSIDE Docker (bare-metal):
 PROXY_URL=socks5://127.0.0.1:1080
+
+# If running INSIDE Docker (docker-compose):
+# 127.0.0.1 is the container itself — use the host alias instead:
+PROXY_URL=socks5://host.docker.internal:1080
 ```
 
 ### Option C: WireGuard tunnel

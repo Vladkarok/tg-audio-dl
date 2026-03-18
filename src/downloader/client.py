@@ -284,7 +284,12 @@ class AudioDownloader:
         entries = info.get("entries") or []
         results: list[DownloadResult] = []
         for entry in entries:
-            results.append(self._build_result(entry))
+            if not isinstance(entry, dict) or "id" not in entry:
+                continue  # skip unavailable/private/deleted tracks
+            try:
+                results.append(self._build_result(entry))
+            except DownloadError:
+                continue  # skip tracks that fail validation
         return results
 
     # ------------------------------------------------------------------
