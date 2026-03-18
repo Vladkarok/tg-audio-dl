@@ -94,6 +94,12 @@ class DiskCache(CacheBackend):
         self._ensure_cache_dir()
         dest = self.cache_dir / f"{video_id}{file_path.suffix}"
 
+        # Remember any existing variant with a different extension so we
+        # can remove it *after* the new write succeeds (avoids cache loss
+        # if the write fails due to ENOSPC, EACCES, etc.).
+        old = self._locate_audio(video_id)
+        stale = old if old is not None and old.suffix != file_path.suffix else None
+
         # Try atomic rename first (same filesystem); fall back to chunked copy
         try:
             # Same-filesystem rename is a tiny metadata update, so doing it
@@ -117,6 +123,11 @@ class DiskCache(CacheBackend):
             # Remove source to complete the cross-device "move"
             with contextlib.suppress(OSError):
                 file_path.unlink()
+
+        # New file is safely in place — now remove the stale variant
+        if stale is not None:
+            with contextlib.suppress(OSError):
+                stale.unlink()
 
         await self.evict_lru_if_needed()
         return dest

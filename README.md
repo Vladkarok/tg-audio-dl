@@ -17,6 +17,7 @@ A self-hosted Telegram bot that downloads audio from YouTube and SoundCloud and 
 ```bash
 cp .env.example .env
 # fill in TELEGRAM_BOT_TOKEN, TELEGRAM_API_ID, TELEGRAM_API_HASH
+# IMPORTANT: set ALLOWED_USER_IDS to restrict access (empty = public bot)
 mkdir -p cache && sudo chown 10001:10001 cache && chmod 750 cache
 docker compose up -d
 ```

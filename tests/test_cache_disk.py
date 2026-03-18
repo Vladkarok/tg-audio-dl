@@ -510,3 +510,46 @@ class TestCleanupStaleTmp:
 
         count = await cleanup_stale_tmp(Path("/nonexistent/dir"), max_age_seconds=3600)
         assert count == 0
+
+
+class TestPutRemovesStaleExtension:
+    """put() should remove old variant when extension changes."""
+
+    async def test_old_m4a_removed_when_mp3_cached(
+        self, disk_cache: DiskCache, cache_dir: Path, tmp_path: Path
+    ) -> None:
+        vid = "sameid12345a"
+        # Cache as .m4a first
+        m4a = tmp_path / "first.m4a"
+        m4a.write_bytes(b"m4a_data")
+        await disk_cache.put(vid, m4a)
+        assert (cache_dir / f"{vid}.m4a").exists()
+
+        # Now cache as .mp3
+        mp3 = tmp_path / "second.mp3"
+        mp3.write_bytes(b"mp3_data")
+        await disk_cache.put(vid, mp3)
+
+        # Old .m4a should be gone, new .mp3 should exist
+        assert not (cache_dir / f"{vid}.m4a").exists()
+        assert (cache_dir / f"{vid}.mp3").exists()
+
+        # get() should return the .mp3
+        result = await disk_cache.get(vid)
+        assert result is not None
+        assert result.suffix == ".mp3"
+
+    async def test_same_extension_not_removed(
+        self, disk_cache: DiskCache, cache_dir: Path, tmp_path: Path
+    ) -> None:
+        vid = "sameid12345b"
+        m4a_1 = tmp_path / "v1.m4a"
+        m4a_1.write_bytes(b"v1_data")
+        await disk_cache.put(vid, m4a_1)
+
+        m4a_2 = tmp_path / "v2.m4a"
+        m4a_2.write_bytes(b"v2_data")
+        await disk_cache.put(vid, m4a_2)
+
+        # File should exist (overwritten, not deleted)
+        assert (cache_dir / f"{vid}.m4a").exists()

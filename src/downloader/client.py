@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import re
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
@@ -25,6 +26,8 @@ from urllib.parse import urlparse as _urlparse
 import yt_dlp
 
 from src.downloader.url_parser import ParsedURL, Platform, URLType
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Public data models
@@ -284,7 +287,19 @@ class AudioDownloader:
         entries = info.get("entries") or []
         results: list[DownloadResult] = []
         for entry in entries:
-            results.append(self._build_result(entry))
+            if not isinstance(entry, dict) or "id" not in entry:
+                continue  # skip unavailable/private/deleted tracks
+            try:
+                results.append(self._build_result(entry))
+            except FileTooLargeError as exc:
+                logger.warning("Skipping playlist track: %s", exc)
+                continue
+            except DownloadError:
+                continue  # skip tracks that fail validation
+        if not results and entries:
+            raise DownloadError(
+                f"All {len(entries)} playlist entries were unavailable or failed"
+            )
         return results
 
     # ------------------------------------------------------------------
