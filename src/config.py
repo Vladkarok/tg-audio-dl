@@ -115,6 +115,13 @@ class Settings(BaseSettings):
             raise ValueError("RATE_LIMIT_PER_MINUTE must be at least 1")
         return v
 
+    @field_validator("DOWNLOAD_TIMEOUT_SECONDS")
+    @classmethod
+    def validate_download_timeout(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError("DOWNLOAD_TIMEOUT_SECONDS must be at least 1")
+        return v
+
     @field_validator("LOG_LEVEL")
     @classmethod
     def validate_log_level(cls, v: str) -> str:

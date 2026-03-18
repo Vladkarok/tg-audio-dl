@@ -53,7 +53,7 @@ services:
     cap_drop:
       - ALL
     healthcheck:
-      test: ["CMD-SHELL", "python -c 'import os, sys; sys.exit(0 if os.path.exists(\"/proc/1/status\") else 1)'"]
+      test: ["CMD-SHELL", "grep -q src.main /proc/1/cmdline"]
       interval: 30s
       timeout: 5s
       retries: 3

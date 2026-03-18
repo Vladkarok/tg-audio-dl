@@ -969,3 +969,74 @@ class TestChapterExtraction:
             results = await downloader.download(_make_parsed_single())
 
         assert results[0].chapters is None
+
+
+# ---------------------------------------------------------------------------
+# test_download_timeout
+# ---------------------------------------------------------------------------
+
+
+class TestDownloadTimeout:
+    """Download timeout wraps asyncio.wait_for and raises DownloadError."""
+
+    async def test_single_download_timeout_raises(self, tmp_path: Path) -> None:
+        """A single download that exceeds timeout raises DownloadError."""
+        import time
+
+        def slow_extract(*_args, **_kwargs):
+            time.sleep(5)
+            return FAKE_SINGLE_INFO
+
+        mock_ydl = MagicMock()
+        mock_ydl.__enter__ = MagicMock(return_value=mock_ydl)
+        mock_ydl.__exit__ = MagicMock(return_value=False)
+        mock_ydl.extract_info.side_effect = slow_extract
+
+        downloader = AudioDownloader(
+            tmp_path, max_file_size_bytes=10**9, download_timeout=1
+        )
+
+        with (
+            patch("src.downloader.client.yt_dlp.YoutubeDL", return_value=mock_ydl),
+            pytest.raises(DownloadError, match="timed out"),
+        ):
+            await downloader.download(_make_parsed_single())
+
+    async def test_playlist_download_timeout_raises(self, tmp_path: Path) -> None:
+        """A playlist download that exceeds timeout raises DownloadError."""
+        import time
+
+        def slow_extract(*_args, **_kwargs):
+            time.sleep(5)
+            return {"entries": []}
+
+        mock_ydl = MagicMock()
+        mock_ydl.__enter__ = MagicMock(return_value=mock_ydl)
+        mock_ydl.__exit__ = MagicMock(return_value=False)
+        mock_ydl.extract_info.side_effect = slow_extract
+
+        downloader = AudioDownloader(
+            tmp_path, max_file_size_bytes=10**9, download_timeout=1
+        )
+
+        with (
+            patch("src.downloader.client.yt_dlp.YoutubeDL", return_value=mock_ydl),
+            pytest.raises(DownloadError, match="timed out"),
+        ):
+            await downloader.download(_make_parsed_playlist())
+
+    async def test_socket_timeout_set_in_ydl_opts(self, tmp_path: Path) -> None:
+        """socket_timeout is passed to yt-dlp options."""
+        _create_fake_m4a(tmp_path, VIDEO_ID)
+        downloader = AudioDownloader(
+            tmp_path, max_file_size_bytes=10**9, download_timeout=600
+        )
+        mock_ydl = _make_ydl_mock(FAKE_SINGLE_INFO)
+
+        with patch(
+            "src.downloader.client.yt_dlp.YoutubeDL",
+            side_effect=lambda opts: mock_ydl,
+        ) as mock_cls:
+            await downloader.download(_make_parsed_single())
+            call_opts = mock_cls.call_args[0][0]
+            assert call_opts["socket_timeout"] == 600

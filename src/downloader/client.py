@@ -375,6 +375,10 @@ class AudioDownloader:
             "no_warnings": True,
             "noplaylist": noplaylist,
             "progress_hooks": [self._make_sync_progress_hook(progress_callback, loop)],
+            # Network-level timeout backstop — ensures the yt-dlp thread unblocks
+            # even if asyncio.wait_for fires first (the thread keeps running until
+            # a blocking network call returns; socket_timeout bounds that wait).
+            "socket_timeout": self._download_timeout,
             # Explicitly enable Node.js for YouTube JS signature challenges
             "js_runtimes": {"node": {}},
         }
