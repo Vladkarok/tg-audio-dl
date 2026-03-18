@@ -108,11 +108,13 @@ class AudioDownloader:
         max_file_size_bytes: int,
         proxy_url: str | None = None,
         max_concurrent_downloads: int = 3,
+        download_timeout: int = 1800,
     ) -> None:
         self._download_dir = download_dir
         self._max_file_size_bytes = max_file_size_bytes
         self._proxy_url = proxy_url
         self._semaphore = asyncio.Semaphore(max_concurrent_downloads)
+        self._download_timeout = download_timeout
 
     # ------------------------------------------------------------------
     # Public API
@@ -198,7 +200,15 @@ class AudioDownloader:
         )
 
         try:
-            info = await asyncio.to_thread(self._run_ydl, ydl_opts, url)
+            info = await asyncio.wait_for(
+                asyncio.to_thread(self._run_ydl, ydl_opts, url),
+                timeout=self._download_timeout,
+            )
+        except TimeoutError:
+            self._cleanup_partials(yt_id)
+            raise DownloadError(
+                f"Download timed out after {self._download_timeout}s"
+            )
         except VideoUnavailableError:
             self._cleanup_partials(yt_id)
             raise
@@ -220,7 +230,15 @@ class AudioDownloader:
             playlistend=max_tracks,
         )
 
-        info = await asyncio.to_thread(self._run_ydl, ydl_opts, url)
+        try:
+            info = await asyncio.wait_for(
+                asyncio.to_thread(self._run_ydl, ydl_opts, url),
+                timeout=self._download_timeout,
+            )
+        except TimeoutError:
+            raise DownloadError(
+                f"Playlist download timed out after {self._download_timeout}s"
+            )
 
         entries = info.get("entries") or []
         results: list[DownloadResult] = []

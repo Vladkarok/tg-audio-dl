@@ -16,7 +16,8 @@ import aiofiles
 from src.cache.base import CacheBackend, validate_video_id
 
 CHUNK_SIZE = 256 * 1024  # 256 KB
-_FILE_ID_RE = re.compile(r"^[A-Za-z0-9_\-]{1,256}$")
+# Telegram file_ids are Base64-encoded and may contain A-Z, a-z, 0-9, _, -, =, .
+_FILE_ID_RE = re.compile(r"^[A-Za-z0-9_\-.=]{1,512}$")
 
 logger = logging.getLogger(__name__)
 

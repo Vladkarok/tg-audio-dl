@@ -47,6 +47,7 @@ class Settings(BaseSettings):
     LOG_LEVEL: str = "INFO"
     PLAYLIST_MAX_TRACKS: int = 50
     RATE_LIMIT_PER_MINUTE: int = 5
+    DOWNLOAD_TIMEOUT_SECONDS: int = 1800
 
     @classmethod
     def settings_customise_sources(
