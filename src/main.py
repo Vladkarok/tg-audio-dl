@@ -46,16 +46,20 @@ async def post_init(application: Application[Any, Any, Any, Any, Any, Any]) -> N
     )
     (settings.CACHE_DIR / "tmp").mkdir(parents=True, exist_ok=True)
 
-    # Schedule periodic cleanup of stale tmp files
-    tmp_dir = settings.CACHE_DIR / "tmp"
+    # Schedule periodic cleanup of stale tmp files (download tmp + s3_tmp)
+    tmp_dirs = [settings.CACHE_DIR / "tmp"]
+    if settings.S3_ENABLED:
+        tmp_dirs.append(settings.CACHE_DIR / "s3_tmp")
     max_age = settings.TMP_MAX_AGE_SECONDS
     interval = settings.TMP_CLEANUP_INTERVAL_SECONDS
 
     async def _cleanup_tmp_job(_context: CallbackContext) -> None:  # type: ignore[type-arg]
-        count = await cleanup_stale_tmp(tmp_dir, max_age)
-        if count:
+        total = 0
+        for d in tmp_dirs:
+            total += await cleanup_stale_tmp(d, max_age)
+        if total:
             logging.getLogger(__name__).info(
-                "Scheduled cleanup removed %d stale tmp file(s)", count
+                "Scheduled cleanup removed %d stale tmp file(s)", total
             )
 
     job_queue = application.job_queue

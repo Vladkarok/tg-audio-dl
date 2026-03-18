@@ -43,6 +43,12 @@ EOF
 
 Replace `your_github_username` (lowercase) with your actual GitHub username.
 
+Lock down file permissions so other local users cannot read secrets:
+
+```bash
+ssh your-server "chmod 600 ~/youtube-download-bot/.env"
+```
+
 > `TELEGRAM_LOCAL_SERVER_URL` is intentionally omitted — it is injected automatically by `docker-compose.yml` as `http://telegram-bot-api:8081`.
 
 ---

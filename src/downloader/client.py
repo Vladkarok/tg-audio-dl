@@ -94,6 +94,17 @@ class FileTooLargeError(DownloadError):
 ProgressCallback = Callable[[DownloadProgress], Coroutine[Any, Any, None]]
 
 
+async def _run_blocking[**P, T](
+    func: Callable[P, T], /, *args: P.args, **kwargs: P.kwargs
+) -> T:
+    """Run blocking work off the event loop.
+
+    Kept as a small wrapper so tests can replace the thread offload strategy
+    without patching ``asyncio`` globally.
+    """
+    return await asyncio.to_thread(func, *args, **kwargs)
+
+
 # ---------------------------------------------------------------------------
 # AudioDownloader
 # ---------------------------------------------------------------------------
@@ -115,6 +126,8 @@ class AudioDownloader:
         self._proxy_url = proxy_url
         self._semaphore = asyncio.Semaphore(max_concurrent_downloads)
         self._download_timeout = download_timeout
+        # Per-media lock to prevent concurrent downloads of the same ID
+        self._inflight: dict[str, asyncio.Lock] = {}
 
     # ------------------------------------------------------------------
     # Public API
@@ -133,8 +146,21 @@ class AudioDownloader:
 
         Raises DownloadError (or subclass) on failure.
         """
-        async with self._semaphore:
-            return await self._download_inner(parsed_url, progress_callback, max_tracks)
+        media_key = parsed_url.video_id or parsed_url.canonical_url
+        # Acquire per-media lock to prevent duplicate downloads of the same ID
+        if media_key not in self._inflight:
+            self._inflight[media_key] = asyncio.Lock()
+        media_lock = self._inflight[media_key]
+
+        async with media_lock:
+            try:
+                async with self._semaphore:
+                    return await self._download_inner(
+                        parsed_url, progress_callback, max_tracks
+                    )
+            finally:
+                # Clean up lock entry to prevent unbounded growth
+                self._inflight.pop(media_key, None)
 
     async def _download_inner(
         self,
@@ -201,7 +227,7 @@ class AudioDownloader:
 
         try:
             info = await asyncio.wait_for(
-                asyncio.to_thread(self._run_ydl, ydl_opts, url),
+                _run_blocking(self._run_ydl, ydl_opts, url),
                 timeout=self._download_timeout,
             )
         except TimeoutError as exc:
@@ -232,7 +258,7 @@ class AudioDownloader:
 
         try:
             info = await asyncio.wait_for(
-                asyncio.to_thread(self._run_ydl, ydl_opts, url),
+                _run_blocking(self._run_ydl, ydl_opts, url),
                 timeout=self._download_timeout,
             )
         except TimeoutError as exc:

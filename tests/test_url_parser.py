@@ -826,3 +826,40 @@ class TestExtractMediaUrlsOrdering:
         assert len(results) == 2
         assert results[0].video_id == VIDEO_ID
         assert results[1].video_id == "AbCdEfG1234"
+
+
+# ===========================================================================
+# URL edge cases — port numbers and parentheses
+# ===========================================================================
+
+
+class TestUrlEdgeCases:
+    """Verify URLs with explicit ports and markdown parentheses are handled."""
+
+    def test_youtube_url_with_port_443(self):
+        """YouTube URL with explicit :443 should be recognised."""
+        result = parse_youtube_url(f"https://www.youtube.com:443/watch?v={VIDEO_ID}")
+        assert result is not None
+        assert result.video_id == VIDEO_ID
+
+    def test_soundcloud_url_with_port_443(self):
+        """SoundCloud URL with explicit :443 should be recognised."""
+        result = parse_soundcloud_url(
+            f"https://soundcloud.com:443/{SC_ARTIST}/{SC_TRACK}"
+        )
+        assert result is not None
+        assert result.platform == Platform.SOUNDCLOUD
+
+    def test_youtube_url_in_parentheses(self):
+        """URL wrapped in parentheses (markdown) should be extracted."""
+        text = f"(https://www.youtube.com/watch?v={VIDEO_ID})"
+        results = extract_media_urls(text)
+        assert len(results) == 1
+        assert results[0].video_id == VIDEO_ID
+
+    def test_soundcloud_url_in_parentheses(self):
+        """SoundCloud URL in parentheses should be extracted."""
+        text = f"(https://soundcloud.com/{SC_ARTIST}/{SC_TRACK})"
+        results = extract_media_urls(text)
+        assert len(results) == 1
+        assert results[0].platform == Platform.SOUNDCLOUD

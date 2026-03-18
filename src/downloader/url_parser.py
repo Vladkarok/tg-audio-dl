@@ -113,8 +113,14 @@ _SAFE_ID_RE = re.compile(r"[^A-Za-z0-9_-]")
 
 
 def _is_youtube_host(host: str) -> bool:
-    """Return True only for legitimate YouTube hostnames."""
-    return host in _YOUTUBE_HOSTS
+    """Return True only for legitimate YouTube hostnames.
+
+    Strips an explicit port (e.g. ``youtube.com:443``) before comparing so
+    that URLs copied from browser dev-tools or proxies are still recognised.
+    """
+    # urlparse puts host:port in netloc — strip port if present
+    bare_host = host.rsplit(":", 1)[0] if ":" in host else host
+    return bare_host in _YOUTUBE_HOSTS
 
 
 def _first_param(params: dict[str, list[str]], key: str) -> str | None:
@@ -270,7 +276,9 @@ def parse_soundcloud_url(raw_url: str) -> ParsedURL | None:
     except Exception:  # noqa: BLE001
         return None
 
-    host = parsed.netloc
+    # Strip explicit port (e.g. soundcloud.com:443) from netloc
+    raw_host = parsed.netloc
+    host = raw_host.rsplit(":", 1)[0] if ":" in raw_host else raw_host
 
     # on.soundcloud.com short URLs — can't derive slug, no video_id
     if host == "on.soundcloud.com":
@@ -344,9 +352,11 @@ def extract_media_urls(text: str) -> list[ParsedURL]:
     # Collect (position, raw_url, platform) for every match across both regexes
     candidates: list[tuple[int, str, str]] = []
     for match in _YT_URL_RE.finditer(text):
-        candidates.append((match.start(), match.group(0), "youtube"))
+        url = match.group(0).rstrip(")")  # strip trailing paren from markdown
+        candidates.append((match.start(), url, "youtube"))
     for match in _SC_URL_RE.finditer(text):
-        candidates.append((match.start(), match.group(0), "soundcloud"))
+        url = match.group(0).rstrip(")")
+        candidates.append((match.start(), url, "soundcloud"))
 
     # Sort by position to preserve order of appearance in the source text
     candidates.sort(key=lambda c: c[0])
