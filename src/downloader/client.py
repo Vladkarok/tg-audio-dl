@@ -157,22 +157,23 @@ class AudioDownloader:
             lock = asyncio.Lock()
             self._inflight[media_key] = (lock, 1)
 
-        async with lock:
-            try:
-                async with self._semaphore:
-                    return await self._download_inner(
-                        parsed_url, progress_callback, max_tracks
-                    )
-            finally:
-                # Decrement refcount; remove entry only when no one else
-                # is using or waiting on this lock.
-                entry = self._inflight.get(media_key)
-                if entry is not None:
-                    _, count = entry
-                    if count <= 1:
-                        self._inflight.pop(media_key, None)
-                    else:
-                        self._inflight[media_key] = (lock, count - 1)
+        try:
+            async with lock, self._semaphore:
+                return await self._download_inner(
+                    parsed_url, progress_callback, max_tracks
+                )
+        finally:
+            # Decrement refcount; remove entry only when no one else
+            # is using or waiting on this lock.  Wrapping the lock
+            # acquisition ensures cancellation during the wait still
+            # decrements the counter.
+            entry = self._inflight.get(media_key)
+            if entry is not None:
+                _, count = entry
+                if count <= 1:
+                    self._inflight.pop(media_key, None)
+                else:
+                    self._inflight[media_key] = (lock, count - 1)
 
     async def _download_inner(
         self,
