@@ -236,6 +236,8 @@ class AudioDownloader:
                 timeout=self._download_timeout,
             )
         except TimeoutError as exc:
+            # No cleanup here — playlist track IDs are unknown pre-download;
+            # partial files in download_dir are overwritten on next attempt.
             raise DownloadError(
                 f"Playlist download timed out after {self._download_timeout}s"
             ) from exc
