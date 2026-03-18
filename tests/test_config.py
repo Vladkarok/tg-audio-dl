@@ -302,6 +302,25 @@ def test_config_s3_enabled_without_bucket_raises(monkeypatch):
         Settings()
 
 
+def test_config_s3_enabled_without_aws_keys_accepted(monkeypatch):
+    """S3_ENABLED=true with S3_BUCKET but no AWS keys should succeed.
+
+    boto3 falls back to its credential chain (IAM roles, instance profiles, etc.)
+    """
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123:ABC")
+    monkeypatch.setenv("S3_ENABLED", "true")
+    monkeypatch.setenv("S3_BUCKET", "my-bucket")
+    monkeypatch.delenv("AWS_ACCESS_KEY_ID", raising=False)
+    monkeypatch.delenv("AWS_SECRET_ACCESS_KEY", raising=False)
+
+    from src.config import Settings
+
+    s = Settings()
+    assert s.S3_ENABLED is True
+    assert s.S3_BUCKET == "my-bucket"
+    assert s.AWS_ACCESS_KEY_ID is None
+
+
 # ---------------------------------------------------------------------------
 # PROXY_URL scheme validation
 # ---------------------------------------------------------------------------

@@ -239,26 +239,32 @@ async def _process_url(
         # Cache hit but no file_id (or file_id failed) — upload file
         cached_path: Path | None = await cache.get(video_id)
         if cached_path is None:
+            # Cache metadata said "exists" but the file is gone (S3 error,
+            # race eviction, etc.).  Fall through to a fresh download instead
+            # of silently returning with a stale progress message.
+            logger.warning("Cache exists() but get() returned None for %s", video_id)
+        else:
+            cached_title, cached_artist = _extract_audio_metadata(cached_path)
+            cached_chapters = await cache.get_chapters(video_id)
+            result = DownloadResult(
+                file_path=cached_path,
+                video_id=video_id,
+                title=cached_title or video_id,
+                artist=cached_artist,
+                duration_seconds=None,
+                thumbnail_url=None,
+                file_size_bytes=cached_path.stat().st_size,
+                chapters=cached_chapters,
+            )
+            msg = await _send_audio(
+                context.bot, update.message.chat_id, result, progress
+            )
+            if msg.audio:
+                with contextlib.suppress(Exception):
+                    await cache.store_file_id(video_id, msg.audio.file_id)
+            await asyncio.sleep(2)
+            await progress.delete()
             return
-        cached_title, cached_artist = _extract_audio_metadata(cached_path)
-        cached_chapters = await cache.get_chapters(video_id)
-        result = DownloadResult(
-            file_path=cached_path,
-            video_id=video_id,
-            title=cached_title or video_id,
-            artist=cached_artist,
-            duration_seconds=None,
-            thumbnail_url=None,
-            file_size_bytes=cached_path.stat().st_size,
-            chapters=cached_chapters,
-        )
-        msg = await _send_audio(context.bot, update.message.chat_id, result, progress)
-        if msg.audio:
-            with contextlib.suppress(Exception):
-                await cache.store_file_id(video_id, msg.audio.file_id)
-        await asyncio.sleep(2)
-        await progress.delete()
-        return
 
     # --- Download ---------------------------------------------------------
     try:

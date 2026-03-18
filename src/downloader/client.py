@@ -94,6 +94,17 @@ class FileTooLargeError(DownloadError):
 ProgressCallback = Callable[[DownloadProgress], Coroutine[Any, Any, None]]
 
 
+async def _run_blocking[**P, T](
+    func: Callable[P, T], /, *args: P.args, **kwargs: P.kwargs
+) -> T:
+    """Run blocking work off the event loop.
+
+    Kept as a small wrapper so tests can replace the thread offload strategy
+    without patching ``asyncio`` globally.
+    """
+    return await asyncio.to_thread(func, *args, **kwargs)
+
+
 # ---------------------------------------------------------------------------
 # AudioDownloader
 # ---------------------------------------------------------------------------
@@ -115,6 +126,10 @@ class AudioDownloader:
         self._proxy_url = proxy_url
         self._semaphore = asyncio.Semaphore(max_concurrent_downloads)
         self._download_timeout = download_timeout
+        # Per-media lock + refcount to prevent concurrent downloads of the
+        # same ID.  The refcount tracks how many callers are using (or waiting
+        # on) a given lock so we only clean up once the last one leaves.
+        self._inflight: dict[str, tuple[asyncio.Lock, int]] = {}
 
     # ------------------------------------------------------------------
     # Public API
@@ -133,8 +148,32 @@ class AudioDownloader:
 
         Raises DownloadError (or subclass) on failure.
         """
-        async with self._semaphore:
-            return await self._download_inner(parsed_url, progress_callback, max_tracks)
+        media_key = parsed_url.video_id or parsed_url.canonical_url
+        # Register interest (bump refcount) before acquiring the lock
+        if media_key in self._inflight:
+            lock, count = self._inflight[media_key]
+            self._inflight[media_key] = (lock, count + 1)
+        else:
+            lock = asyncio.Lock()
+            self._inflight[media_key] = (lock, 1)
+
+        try:
+            async with lock, self._semaphore:
+                return await self._download_inner(
+                    parsed_url, progress_callback, max_tracks
+                )
+        finally:
+            # Decrement refcount; remove entry only when no one else
+            # is using or waiting on this lock.  Wrapping the lock
+            # acquisition ensures cancellation during the wait still
+            # decrements the counter.
+            entry = self._inflight.get(media_key)
+            if entry is not None:
+                _, count = entry
+                if count <= 1:
+                    self._inflight.pop(media_key, None)
+                else:
+                    self._inflight[media_key] = (lock, count - 1)
 
     async def _download_inner(
         self,
@@ -201,7 +240,7 @@ class AudioDownloader:
 
         try:
             info = await asyncio.wait_for(
-                asyncio.to_thread(self._run_ydl, ydl_opts, url),
+                _run_blocking(self._run_ydl, ydl_opts, url),
                 timeout=self._download_timeout,
             )
         except TimeoutError as exc:
@@ -232,7 +271,7 @@ class AudioDownloader:
 
         try:
             info = await asyncio.wait_for(
-                asyncio.to_thread(self._run_ydl, ydl_opts, url),
+                _run_blocking(self._run_ydl, ydl_opts, url),
                 timeout=self._download_timeout,
             )
         except TimeoutError as exc:

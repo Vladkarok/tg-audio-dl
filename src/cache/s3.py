@@ -10,6 +10,7 @@ All S3 errors are caught and logged; operations degrade gracefully
 
 import asyncio
 import logging
+from collections.abc import Callable
 from pathlib import Path
 
 import boto3
@@ -27,6 +28,17 @@ _AUDIO_EXTENSIONS = (".m4a", ".opus", ".webm", ".mp3", ".ogg")
 
 def _s3_key(video_id: str, suffix: str = ".m4a") -> str:
     return f"{_S3_KEY_PREFIX}{video_id}{suffix}"
+
+
+async def _run_blocking[**P, T](
+    func: Callable[P, T], /, *args: P.args, **kwargs: P.kwargs
+) -> T:
+    """Run blocking work off the event loop.
+
+    Kept as a small wrapper so tests can replace the thread offload strategy
+    without patching ``asyncio`` globally.
+    """
+    return await asyncio.to_thread(func, *args, **kwargs)
 
 
 class S3Cache(CacheBackend):
@@ -86,7 +98,7 @@ class S3Cache(CacheBackend):
             return local_path
 
         try:
-            return await asyncio.to_thread(_download)
+            return await _run_blocking(_download)
         except ClientError as exc:
             code, msg = self._extract_error(exc)
             if code in ("404", "NoSuchKey"):
@@ -108,7 +120,7 @@ class S3Cache(CacheBackend):
             self._client.upload_file(str(file_path), self._bucket, key)
 
         try:
-            await asyncio.to_thread(_upload)
+            await _run_blocking(_upload)
             return file_path
         except ClientError as exc:
             code, msg = self._extract_error(exc)
@@ -127,7 +139,7 @@ class S3Cache(CacheBackend):
             return self._find_s3_key(video_id) is not None
 
         try:
-            return await asyncio.to_thread(_probe)
+            return await _run_blocking(_probe)
         except ClientError as exc:
             code, msg = self._extract_error(exc)
             logger.warning(
@@ -147,7 +159,7 @@ class S3Cache(CacheBackend):
                 self._client.delete_object(Bucket=self._bucket, Key=key)
 
         try:
-            await asyncio.to_thread(_delete)
+            await _run_blocking(_delete)
         except ClientError as exc:
             code, msg = self._extract_error(exc)
             logger.warning(
@@ -173,7 +185,7 @@ class S3Cache(CacheBackend):
             return total
 
         try:
-            return await asyncio.to_thread(_sum_sizes)
+            return await _run_blocking(_sum_sizes)
         except ClientError as exc:
             code, msg = self._extract_error(exc)
             logger.warning("S3Cache.total_size_bytes failed: code=%s msg=%s", code, msg)

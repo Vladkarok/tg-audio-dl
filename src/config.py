@@ -179,18 +179,10 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_s3_config(self) -> "Settings":
-        if self.S3_ENABLED:
-            if not self.S3_BUCKET:
-                raise ValueError("S3_BUCKET must be set when S3_ENABLED=True")
-            missing = []
-            if not self.AWS_ACCESS_KEY_ID:
-                missing.append("AWS_ACCESS_KEY_ID")
-            if not self.AWS_SECRET_ACCESS_KEY:
-                missing.append("AWS_SECRET_ACCESS_KEY")
-            if missing:
-                raise ValueError(
-                    f"{', '.join(missing)} must be set when S3_ENABLED=True"
-                )
+        if self.S3_ENABLED and not self.S3_BUCKET:
+            raise ValueError("S3_BUCKET must be set when S3_ENABLED=True")
+        # AWS keys are optional — boto3 falls back to its credential chain
+        # (IAM roles, instance profiles, env vars, ~/.aws/credentials, etc.)
         return self
 
 

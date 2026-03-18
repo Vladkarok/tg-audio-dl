@@ -1040,3 +1040,80 @@ class TestDownloadTimeout:
             await downloader.download(_make_parsed_single())
             call_opts = mock_cls.call_args[0][0]
             assert call_opts["socket_timeout"] == 600
+
+
+# ---------------------------------------------------------------------------
+# Per-media inflight dedup
+# ---------------------------------------------------------------------------
+
+
+class TestInflightDedup:
+    async def test_concurrent_same_id_serialized(self, tmp_path: Path) -> None:
+        """Two concurrent downloads of the same video_id must not overlap."""
+        call_order: list[str] = []
+        downloader = AudioDownloader(tmp_path, max_file_size_bytes=10**9)
+
+        _create_fake_m4a(tmp_path, VIDEO_ID)
+        mock_ydl = _make_ydl_mock(FAKE_SINGLE_INFO)
+
+        async def fake_run_blocking(func, /, *args, **kwargs):
+            """Yield once so a second task can contend for the same media lock."""
+            call_order.append("enter")
+            await asyncio.sleep(0)
+            result = func(*args, **kwargs)
+            call_order.append("exit")
+            return result
+
+        with (
+            patch("src.downloader.client.yt_dlp.YoutubeDL", return_value=mock_ydl),
+            patch("src.downloader.client._run_blocking", new=fake_run_blocking),
+        ):
+            tasks = [
+                asyncio.create_task(downloader.download(_make_parsed_single())),
+                asyncio.create_task(downloader.download(_make_parsed_single())),
+            ]
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+        # With per-media lock, entries should be serialized: enter/exit/enter/exit
+        # Without it, we'd see enter/enter/exit/exit
+        assert call_order == ["enter", "exit", "enter", "exit"]
+
+    async def test_inflight_lock_cleaned_up(self, tmp_path: Path) -> None:
+        """Inflight lock entry is removed after download completes."""
+        downloader = AudioDownloader(tmp_path, max_file_size_bytes=10**9)
+        _create_fake_m4a(tmp_path, VIDEO_ID)
+        mock_ydl = _make_ydl_mock(FAKE_SINGLE_INFO)
+
+        with patch("src.downloader.client.yt_dlp.YoutubeDL", return_value=mock_ydl):
+            await downloader.download(_make_parsed_single())
+
+        assert VIDEO_ID not in downloader._inflight
+
+    async def test_three_concurrent_all_serialized(self, tmp_path: Path) -> None:
+        """Three concurrent downloads must all be serialized — no overlap."""
+        call_order: list[str] = []
+        downloader = AudioDownloader(tmp_path, max_file_size_bytes=10**9)
+
+        _create_fake_m4a(tmp_path, VIDEO_ID)
+        mock_ydl = _make_ydl_mock(FAKE_SINGLE_INFO)
+
+        async def fake_run_blocking(func, /, *args, **kwargs):
+            call_order.append("enter")
+            await asyncio.sleep(0)
+            result = func(*args, **kwargs)
+            call_order.append("exit")
+            return result
+
+        with (
+            patch("src.downloader.client.yt_dlp.YoutubeDL", return_value=mock_ydl),
+            patch("src.downloader.client._run_blocking", new=fake_run_blocking),
+        ):
+            tasks = [
+                asyncio.create_task(downloader.download(_make_parsed_single())),
+                asyncio.create_task(downloader.download(_make_parsed_single())),
+                asyncio.create_task(downloader.download(_make_parsed_single())),
+            ]
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+        # All three must be fully serialized
+        assert call_order == ["enter", "exit", "enter", "exit", "enter", "exit"]
