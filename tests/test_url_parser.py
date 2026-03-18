@@ -863,3 +863,17 @@ class TestUrlEdgeCases:
         results = extract_media_urls(text)
         assert len(results) == 1
         assert results[0].platform == Platform.SOUNDCLOUD
+
+    def test_youtube_url_with_port_extracted(self):
+        """YouTube URL with :443 should be found by extract_media_urls (regex)."""
+        text = f"check https://www.youtube.com:443/watch?v={VIDEO_ID} out"
+        results = extract_media_urls(text)
+        assert len(results) == 1
+        assert results[0].video_id == VIDEO_ID
+
+    def test_soundcloud_url_with_port_extracted(self):
+        """SoundCloud URL with :443 should be found by extract_media_urls (regex)."""
+        text = f"listen https://soundcloud.com:443/{SC_ARTIST}/{SC_TRACK} now"
+        results = extract_media_urls(text)
+        assert len(results) == 1
+        assert results[0].platform == Platform.SOUNDCLOUD

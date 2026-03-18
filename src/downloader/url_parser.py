@@ -66,7 +66,7 @@ _YOUTUBE_HOSTS: frozenset[str] = frozenset(
 
 # Regex to find candidate YouTube URLs inside free-form text
 _YT_URL_RE = re.compile(
-    r"https?://(?:www\.|m\.|music\.)?(?:youtube\.com|youtu\.be)"
+    r"https?://(?:www\.|m\.|music\.)?(?:youtube\.com|youtu\.be)(?::\d+)?"
     r"(?:/[^\s\"'<>]*)?"
     r"(?:\?[^\s\"'<>]*)?"
 )
@@ -99,8 +99,8 @@ _SC_RESERVED_PATHS: frozenset[str] = frozenset(
 
 # Regex to find candidate SoundCloud URLs inside free-form text
 _SC_URL_RE = re.compile(
-    r"https?://(?:www\.)?soundcloud\.com(?:/[^\s\"'<>]*)?"
-    r"|https?://on\.soundcloud\.com(?:/[^\s\"'<>]*)?"
+    r"https?://(?:www\.)?soundcloud\.com(?::\d+)?(?:/[^\s\"'<>]*)?"
+    r"|https?://on\.soundcloud\.com(?::\d+)?(?:/[^\s\"'<>]*)?"
 )
 
 # Regex for safe cache key characters

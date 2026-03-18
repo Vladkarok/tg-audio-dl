@@ -126,8 +126,10 @@ class AudioDownloader:
         self._proxy_url = proxy_url
         self._semaphore = asyncio.Semaphore(max_concurrent_downloads)
         self._download_timeout = download_timeout
-        # Per-media lock to prevent concurrent downloads of the same ID
-        self._inflight: dict[str, asyncio.Lock] = {}
+        # Per-media lock + refcount to prevent concurrent downloads of the
+        # same ID.  The refcount tracks how many callers are using (or waiting
+        # on) a given lock so we only clean up once the last one leaves.
+        self._inflight: dict[str, tuple[asyncio.Lock, int]] = {}
 
     # ------------------------------------------------------------------
     # Public API
@@ -147,20 +149,30 @@ class AudioDownloader:
         Raises DownloadError (or subclass) on failure.
         """
         media_key = parsed_url.video_id or parsed_url.canonical_url
-        # Acquire per-media lock to prevent duplicate downloads of the same ID
-        if media_key not in self._inflight:
-            self._inflight[media_key] = asyncio.Lock()
-        media_lock = self._inflight[media_key]
+        # Register interest (bump refcount) before acquiring the lock
+        if media_key in self._inflight:
+            lock, count = self._inflight[media_key]
+            self._inflight[media_key] = (lock, count + 1)
+        else:
+            lock = asyncio.Lock()
+            self._inflight[media_key] = (lock, 1)
 
-        async with media_lock:
+        async with lock:
             try:
                 async with self._semaphore:
                     return await self._download_inner(
                         parsed_url, progress_callback, max_tracks
                     )
             finally:
-                # Clean up lock entry to prevent unbounded growth
-                self._inflight.pop(media_key, None)
+                # Decrement refcount; remove entry only when no one else
+                # is using or waiting on this lock.
+                entry = self._inflight.get(media_key)
+                if entry is not None:
+                    _, count = entry
+                    if count <= 1:
+                        self._inflight.pop(media_key, None)
+                    else:
+                        self._inflight[media_key] = (lock, count - 1)
 
     async def _download_inner(
         self,
