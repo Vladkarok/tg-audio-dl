@@ -118,11 +118,13 @@ class S3Cache(CacheBackend):
         key = _s3_key(video_id, file_path.suffix)
 
         def _upload() -> None:
-            # Upload first, then remove stale variant — this ordering
-            # ensures there is always at least one valid object in S3
-            # (no availability gap for concurrent get() calls).
-            self._client.upload_file(str(file_path), self._bucket, key)
+            # Probe for stale variant *before* upload so the lookup sees
+            # the old extension, not the new one (which has higher priority
+            # and would shadow the old key in _find_s3_key).
             old_key = self._find_s3_key(video_id)
+            # Upload first, then delete — ensures there is always at least
+            # one valid object (no availability gap for concurrent get).
+            self._client.upload_file(str(file_path), self._bucket, key)
             if old_key is not None and old_key != key:
                 with contextlib.suppress(ClientError):
                     self._client.delete_object(Bucket=self._bucket, Key=old_key)

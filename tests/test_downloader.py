@@ -1164,3 +1164,16 @@ class TestPlaylistSparseEntries:
             results = await downloader.download(_make_parsed_playlist())
 
         assert len(results) == 1
+
+    async def test_all_entries_none_raises(self, tmp_path: Path) -> None:
+        """Playlist where all entries are None should raise DownloadError."""
+        info = {**FAKE_PLAYLIST_INFO, "entries": [None, None]}
+        mock_ydl = _make_ydl_mock(info)
+
+        downloader = AudioDownloader(download_dir=tmp_path, max_file_size_bytes=10**9)
+
+        with (
+            patch("src.downloader.client.yt_dlp.YoutubeDL", return_value=mock_ydl),
+            pytest.raises(DownloadError, match="All 2 playlist entries"),
+        ):
+            await downloader.download(_make_parsed_playlist())

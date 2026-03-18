@@ -297,8 +297,8 @@ class AudioDownloader:
             except DownloadError:
                 continue  # skip tracks that fail validation
         if not results and entries:
-            logger.warning(
-                "All %d playlist entries were unavailable or failed", len(entries)
+            raise DownloadError(
+                f"All {len(entries)} playlist entries were unavailable or failed"
             )
         return results
 
