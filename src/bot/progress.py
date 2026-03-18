@@ -151,7 +151,8 @@ class ProgressManager:
                 loop = asyncio.get_running_loop()
                 fut: asyncio.Future[None] = loop.create_future()
                 loop.call_later(
-                    1.0, lambda f=fut: f.set_result(None) if not f.done() else None
+                    1.0,
+                    lambda f=fut: f.set_result(None) if not f.done() else None,  # type: ignore[misc]
                 )
                 await fut
                 idx += 1

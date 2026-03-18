@@ -101,6 +101,20 @@ class Settings(BaseSettings):
             return [int(uid) for uid in v]
         return []
 
+    @field_validator("CACHE_MAX_SIZE_GB")
+    @classmethod
+    def validate_cache_max_size(cls, v: float) -> float:
+        if v <= 0:
+            raise ValueError("CACHE_MAX_SIZE_GB must be positive")
+        return v
+
+    @field_validator("RATE_LIMIT_PER_MINUTE")
+    @classmethod
+    def validate_rate_limit(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError("RATE_LIMIT_PER_MINUTE must be at least 1")
+        return v
+
     @field_validator("LOG_LEVEL")
     @classmethod
     def validate_log_level(cls, v: str) -> str:

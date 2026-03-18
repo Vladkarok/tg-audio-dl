@@ -28,14 +28,13 @@ dev = [
     "moto[s3]>=5.0",
     "ruff>=0.2",
     "mypy>=1.0",
-    "black>=24.0",
     "types-aiofiles>=25.1.0.20251011",
 ]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
-addopts = "--cov=src --cov-report=term-missing -v"
+addopts = "--cov=src --cov-report=term-missing --cov-fail-under=80 -v"
 
 [tool.ruff]
 line-length = 88
@@ -53,10 +52,6 @@ ignore = ["S101"]  # allow assert in tests
     "SIM300", # Yoda conditions — assertion style preference in tests
     "E501",   # line too long — readability over strict line limit in tests
 ]
-
-[tool.black]
-line-length = 88
-target-version = ["py313"]
 
 [tool.mypy]
 python_version = "3.13"

@@ -204,11 +204,11 @@ class AudioDownloader:
                 asyncio.to_thread(self._run_ydl, ydl_opts, url),
                 timeout=self._download_timeout,
             )
-        except TimeoutError:
+        except TimeoutError as exc:
             self._cleanup_partials(yt_id)
             raise DownloadError(
                 f"Download timed out after {self._download_timeout}s"
-            )
+            ) from exc
         except VideoUnavailableError:
             self._cleanup_partials(yt_id)
             raise
@@ -235,10 +235,10 @@ class AudioDownloader:
                 asyncio.to_thread(self._run_ydl, ydl_opts, url),
                 timeout=self._download_timeout,
             )
-        except TimeoutError:
+        except TimeoutError as exc:
             raise DownloadError(
                 f"Playlist download timed out after {self._download_timeout}s"
-            )
+            ) from exc
 
         entries = info.get("entries") or []
         results: list[DownloadResult] = []
