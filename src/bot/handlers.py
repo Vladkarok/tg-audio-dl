@@ -16,7 +16,7 @@ import logging
 import time
 from pathlib import Path
 
-from mutagen.mp4 import MP4  # type: ignore[import-untyped]
+from mutagen.mp4 import MP4
 from telegram import Bot, InputFile, Message, Update
 from telegram.ext import ContextTypes
 
@@ -124,7 +124,7 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     # --- Access control ---------------------------------------------------
     allowed: list[int] = settings.ALLOWED_USER_IDS
     if allowed and user_id not in allowed:
-        logger.debug("Rejected user %d (not in ALLOWED_USER_IDS)", user_id)
+        logger.warning("Rejected user %d (not in ALLOWED_USER_IDS)", user_id)
         return
 
     # --- Parse URL --------------------------------------------------------
@@ -301,16 +301,16 @@ async def _process_url(
         await progress.set_step(Step.UPLOADING, StepStatus.ACTIVE)
 
         # Store in cache — put() moves the file, so use the returned path
-        cached_path: Path | None = None
+        stored_path: Path | None = None
         try:
-            cached_path = await cache.put(result.video_id, result.file_path)
+            stored_path = await cache.put(result.video_id, result.file_path)
         except Exception:
             logger.exception("Cache put failed for video_id=%s", result.video_id)
 
         # Use cached path if available, otherwise fall back to original
         send_result = (
-            dataclasses.replace(result, file_path=cached_path)
-            if cached_path
+            dataclasses.replace(result, file_path=stored_path)
+            if stored_path
             else result
         )
         msg = await _send_audio(

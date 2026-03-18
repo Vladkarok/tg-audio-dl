@@ -50,6 +50,9 @@ jobs:
       - name: Ruff format check
         run: uv run ruff format --check src/ tests/
 
+      - name: Type check
+        run: uv run mypy src/
+
   deploy:
     name: Deploy to VPS
     runs-on: ubuntu-latest

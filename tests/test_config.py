@@ -355,3 +355,76 @@ class TestProxyUrlValidation:
 
         s = Settings()
         assert s.PROXY_URL is None
+
+
+# ---------------------------------------------------------------------------
+# Numeric field validators
+# ---------------------------------------------------------------------------
+
+
+class TestNumericValidators:
+    @pytest.fixture(autouse=True)
+    def set_required_token(self, monkeypatch):
+        monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123:ABC")
+
+    def test_cache_max_size_gb_zero_rejected(self, monkeypatch):
+        monkeypatch.setenv("CACHE_MAX_SIZE_GB", "0")
+        from src.config import Settings
+
+        with pytest.raises((ValidationError, ValueError)):
+            Settings()
+
+    def test_cache_max_size_gb_negative_rejected(self, monkeypatch):
+        monkeypatch.setenv("CACHE_MAX_SIZE_GB", "-1")
+        from src.config import Settings
+
+        with pytest.raises((ValidationError, ValueError)):
+            Settings()
+
+    def test_cache_max_size_gb_positive_accepted(self, monkeypatch):
+        monkeypatch.setenv("CACHE_MAX_SIZE_GB", "2.5")
+        from src.config import Settings
+
+        s = Settings()
+        assert s.CACHE_MAX_SIZE_GB == 2.5
+
+    def test_rate_limit_zero_rejected(self, monkeypatch):
+        monkeypatch.setenv("RATE_LIMIT_PER_MINUTE", "0")
+        from src.config import Settings
+
+        with pytest.raises((ValidationError, ValueError)):
+            Settings()
+
+    def test_rate_limit_negative_rejected(self, monkeypatch):
+        monkeypatch.setenv("RATE_LIMIT_PER_MINUTE", "-5")
+        from src.config import Settings
+
+        with pytest.raises((ValidationError, ValueError)):
+            Settings()
+
+    def test_rate_limit_positive_accepted(self, monkeypatch):
+        monkeypatch.setenv("RATE_LIMIT_PER_MINUTE", "10")
+        from src.config import Settings
+
+        s = Settings()
+        assert s.RATE_LIMIT_PER_MINUTE == 10
+
+    def test_download_timeout_default(self):
+        from src.config import Settings
+
+        s = Settings()
+        assert s.DOWNLOAD_TIMEOUT_SECONDS == 1800
+
+    def test_download_timeout_zero_rejected(self, monkeypatch):
+        monkeypatch.setenv("DOWNLOAD_TIMEOUT_SECONDS", "0")
+        from src.config import Settings
+
+        with pytest.raises((ValidationError, ValueError)):
+            Settings()
+
+    def test_download_timeout_custom_accepted(self, monkeypatch):
+        monkeypatch.setenv("DOWNLOAD_TIMEOUT_SECONDS", "900")
+        from src.config import Settings
+
+        s = Settings()
+        assert s.DOWNLOAD_TIMEOUT_SECONDS == 900

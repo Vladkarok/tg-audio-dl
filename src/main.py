@@ -40,6 +40,7 @@ async def post_init(application: Application[Any, Any, Any, Any, Any, Any]) -> N
         download_dir=settings.CACHE_DIR / "tmp",
         max_file_size_bytes=settings.MAX_FILE_SIZE_MB * 1024 * 1024,
         proxy_url=settings.PROXY_URL,
+        download_timeout=settings.DOWNLOAD_TIMEOUT_SECONDS,
     )
     (settings.CACHE_DIR / "tmp").mkdir(parents=True, exist_ok=True)
 

@@ -21,6 +21,8 @@ def clear_env_vars(monkeypatch):
         "LOG_LEVEL",
         "PLAYLIST_MAX_TRACKS",
         "RATE_LIMIT_PER_MINUTE",
+        "PROXY_URL",
+        "DOWNLOAD_TIMEOUT_SECONDS",
     ]
     for var in vars_to_clear:
         monkeypatch.delenv(var, raising=False)
