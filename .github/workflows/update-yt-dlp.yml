@@ -1,0 +1,58 @@
+name: Update yt-dlp
+
+on:
+  schedule:
+    - cron: "0 3 * * 1"  # Every Monday at 03:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0  # needed to read tags for version bump
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        with:
+          version: "0.6.6"
+
+      - name: Update yt-dlp
+        run: uv lock --upgrade-package yt-dlp
+
+      - name: Detect version change
+        id: check
+        run: |
+          if git diff --quiet uv.lock; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            OLD=$(git diff uv.lock | grep '^-version = ' | grep -oP '"\K[^"]+' | head -1)
+            NEW=$(git diff uv.lock | grep '^+version = ' | grep -oP '"\K[^"]+' | head -1)
+            echo "changed=true"  >> "$GITHUB_OUTPUT"
+            echo "old=${OLD}"    >> "$GITHUB_OUTPUT"
+            echo "new=${NEW}"    >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Bump patch tag and push
+        if: steps.check.outputs.changed == 'true'
+        env:
+          OLD: ${{ steps.check.outputs.old }}
+          NEW: ${{ steps.check.outputs.new }}
+        run: |
+          LATEST=$(git describe --tags --abbrev=0)
+          MAJOR=$(echo "$LATEST" | sed 's/v//' | cut -d. -f1)
+          MINOR=$(echo "$LATEST" | sed 's/v//' | cut -d. -f2)
+          PATCH=$(echo "$LATEST" | sed 's/v//' | cut -d. -f3)
+          NEW_TAG="v${MAJOR}.${MINOR}.$((PATCH + 1))"
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add uv.lock
+          git commit -m "chore: bump yt-dlp ${OLD} → ${NEW}"
+          git tag "$NEW_TAG"
+          git push origin HEAD:master "$NEW_TAG"
