@@ -180,7 +180,7 @@ Type=oneshot
 RemainAfterExit=yes
 ExecStart=/bin/bash -c '\
     ip route replace default via 172.20.0.2 table wgout; \
-    ip rule add to <YOUR_HOME_STATIC_IP>/32 lookup main priority 100 2>/dev/null; \
+    ip rule add to <YOUR_HOME_STATIC_IP>/32 lookup main priority 50 2>/dev/null; \
     ip rule add fwmark 0x1 table wgout 2>/dev/null; \
     iptables -t mangle -C OUTPUT -m owner --uid-owner wgproxy -d 10.0.0.0/8 -j RETURN 2>/dev/null || \
     iptables -t mangle -I OUTPUT 1 -m owner --uid-owner wgproxy -d 10.0.0.0/8 -j RETURN; \
@@ -193,7 +193,7 @@ ExecStart=/bin/bash -c '\
     iptables -t nat -C POSTROUTING -o wg0 -j MASQUERADE 2>/dev/null || \
     iptables -t nat -A POSTROUTING -o wg0 -j MASQUERADE'
 ExecStop=/bin/bash -c '\
-    ip rule del to <YOUR_HOME_STATIC_IP>/32 lookup main priority 100 2>/dev/null; \
+    ip rule del to <YOUR_HOME_STATIC_IP>/32 lookup main priority 50 2>/dev/null; \
     ip rule del fwmark 0x1 table wgout 2>/dev/null; \
     iptables -t mangle -D OUTPUT -m owner --uid-owner wgproxy -d 10.0.0.0/8 -j RETURN 2>/dev/null; \
     iptables -t mangle -D OUTPUT -m owner --uid-owner wgproxy -d 172.16.0.0/12 -j RETURN 2>/dev/null; \
