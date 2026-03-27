@@ -121,12 +121,14 @@ class AudioDownloader:
         download_dir: Path,
         max_file_size_bytes: int,
         proxy_url: str | None = None,
+        cookies_file: str | None = None,
         max_concurrent_downloads: int = 3,
         download_timeout: int = 1800,
     ) -> None:
         self._download_dir = download_dir
         self._max_file_size_bytes = max_file_size_bytes
         self._proxy_url = proxy_url
+        self._cookies_file = cookies_file
         self._semaphore = asyncio.Semaphore(max_concurrent_downloads)
         self._download_timeout = download_timeout
         # Per-media lock + refcount to prevent concurrent downloads of the
@@ -442,6 +444,8 @@ class AudioDownloader:
         }
         if self._proxy_url is not None:
             opts["proxy"] = self._proxy_url
+        if self._cookies_file is not None:
+            opts["cookiefile"] = self._cookies_file
         if playlistend is not None:
             opts["playlistend"] = playlistend
         return opts

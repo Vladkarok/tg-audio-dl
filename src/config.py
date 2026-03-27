@@ -41,6 +41,7 @@ class Settings(BaseSettings):
     AWS_REGION: str = "us-east-1"
 
     PROXY_URL: str | None = None
+    COOKIES_FILE: str | None = None
 
     MAX_FILE_SIZE_MB: int = 2000
     ALLOWED_USER_IDS: list[int] = []
