@@ -111,15 +111,11 @@ def _check_egress_differs(proxy_url: str) -> int:
         check(
             "egress IP differs from direct",
             False,
-            f"both are {direct_ip} — proxy is not routing through a different path",
+            "proxy egress matches direct egress — not routing through a different path",
         )
         return 1
 
-    check(
-        "egress IP differs from direct",
-        True,
-        f"direct={direct_ip}  proxy={proxy_ip}",
-    )
+    check("egress IP differs from direct", True, "proxy routes through a different IP")
     return 0
 
 
