@@ -39,7 +39,7 @@ services:
     environment:
       TELEGRAM_LOCAL_SERVER_URL: http://telegram-bot-api:8081
     extra_hosts:
-      - "host.docker.internal:host-gateway"
+      - "host.docker.internal:10.0.0.65"
     volumes:
       - ./cache:/app/cache:rw
     networks:

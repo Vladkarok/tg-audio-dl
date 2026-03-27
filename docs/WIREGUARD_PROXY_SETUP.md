@@ -219,7 +219,7 @@ Requires=wg-routing.service
 [Service]
 Type=simple
 User=wgproxy
-ExecStart=/usr/local/bin/microsocks -i 127.0.0.1 -p 1080
+ExecStart=/usr/local/bin/microsocks -i 0.0.0.0 -p 1080
 Restart=always
 RestartSec=5
 
@@ -252,9 +252,17 @@ If it shows your home IP — the tunnel works.
 
 ### 4.1 Add PROXY_URL to .env on the server
 
-Because microsocks now listens on `127.0.0.1` only (not `0.0.0.0`), Docker containers reach it
-via `host.docker.internal`, which is already mapped to the host gateway in `docker-compose.yml`
-through `extra_hosts: ["host.docker.internal:host-gateway"]`:
+Docker containers reach microsocks via `host.docker.internal`, which is mapped to the host's
+LAN IP in `docker-compose.yml` through `extra_hosts`:
+
+```yaml
+extra_hosts:
+  - "host.docker.internal:10.0.0.65"   # host LAN IP — adjust to match yours
+```
+
+> **Why not `host-gateway`?** Docker's `host-gateway` resolves to the Docker bridge interface IP
+> (`172.17.0.1`). If that bridge interface is down or on a different subnet than the container's
+> network, the connection is refused. Pinning to the host's LAN IP (`ens3`/`eth0`) is reliable.
 
 ```bash
 echo 'PROXY_URL=socks5://host.docker.internal:1080' >> ~/youtube-download-bot/.env
@@ -276,31 +284,19 @@ All checks should pass — YouTube now sees your home IP.
 
 ---
 
-### 4.4 Allow Docker containers to reach microsocks
+### 4.4 Restrict microsocks to Docker traffic only
 
-> **Why 127.0.0.1 instead of 0.0.0.0?**
-> Binding microsocks to `127.0.0.1` means the SOCKS5 port is never reachable from the public
-> internet or from other hosts on the VPS's network interfaces. Only processes on the VPS itself
-> (including Docker containers via the host-gateway bridge) can connect. This eliminates the need
-> to rely solely on iptables to block external access to port 1080 — the kernel simply never
-> delivers packets from other interfaces to a loopback-bound socket.
-
-Because microsocks listens on `127.0.0.1`, Docker containers connect through the host-gateway
-address (`host.docker.internal`). Traffic arrives from the Docker bridge subnet (typically
-`172.17.0.0/16` or a custom bridge such as `172.20.0.0/16`). You only need to permit that
-subnet on the loopback interface — no rule is needed for public interfaces:
+microsocks binds to `0.0.0.0:1080` so that Docker containers can connect via the host's LAN IP.
+Add an iptables rule to block access from the public internet — only Docker bridge subnets are allowed:
 
 ```bash
-# Allow the Docker bridge subnet to reach microsocks on loopback.
-# Adjust the source subnet if you use a custom Docker network (check: docker network inspect <name>).
-sudo iptables -I INPUT 1 -s 172.16.0.0/12 -i lo -p tcp --dport 1080 -j ACCEPT
+# Allow Docker bridge subnets (172.0.0.0/8 covers all default and custom Docker networks).
+sudo iptables -I INPUT 1 -s 172.0.0.0/8 -p tcp --dport 1080 -j ACCEPT
+# Drop all other inbound connections to port 1080.
+sudo iptables -A INPUT -p tcp --dport 1080 -j DROP
 ```
 
-This rule is deliberately narrow: it matches only traffic arriving on the loopback interface (`-i lo`)
-from RFC-1918 `172.x` space, which covers all default and custom Docker bridge subnets.
-Public internet packets never arrive on `lo`, so port 1080 remains invisible externally.
-
-> **Persisting the rule:** Add it to your iptables save/restore mechanism, for example:
+> **Persisting the rules:** Add them to your iptables save/restore mechanism, for example:
 > ```bash
 > sudo iptables-save | sudo tee /etc/iptables/rules.v4
 > ```
@@ -314,6 +310,6 @@ Public internet packets never arrive on `lo`, so port 1080 remains invisible ext
 | `ping 172.20.0.2` fails | Check MikroTik input firewall allows UDP 13231. Check `sudo wg show` for handshake. |
 | `curl --socks5-hostname` hangs | Check `sudo systemctl status microsocks` and `wg-routing`. Check `iptables -t mangle -L -n`. Also verify the WG endpoint bypass rule exists: `ip rule list` should show your home IP → lookup main before the fwmark rule. |
 | `curl` shows Oracle IP (not home IP) | Check MASQUERADE: `iptables -t nat -L POSTROUTING -n` should show MASQUERADE on wg0. |
-| Bot gets "Connection refused" to proxy | Either microsocks is down (`systemctl status microsocks`), or the iptables rule in section 4.3 is missing. Confirm microsocks binds to 127.0.0.1 (`ss -tlnp | grep 1080`) and that `PROXY_URL=socks5://host.docker.internal:1080` is set in `.env`. |
+| Bot gets "Connection refused" to proxy | Either microsocks is down (`systemctl status microsocks`), or `host.docker.internal` resolves to the wrong host IP. Confirm microsocks binds to `0.0.0.0` (`ss -tlnp \| grep 1080`). Check that `extra_hosts` in `docker-compose.yml` maps `host.docker.internal` to the host's LAN IP (`ip addr show ens3`), not to `host-gateway` (which resolves to the docker0 bridge — often down). |
 | Bot still gets "Sign in to confirm" | Verify `PROXY_URL` is in `.env`. Run `docker exec ... env \| grep PROXY` to confirm. |
 | microsocks won't start | Check `sudo systemctl status microsocks -l`. |

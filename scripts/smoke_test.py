@@ -15,6 +15,7 @@ import shutil
 import socket
 import sys
 import urllib.parse
+import urllib.request
 
 # "Me at the zoo" — first YT video, always public
 TEST_URL = "https://www.youtube.com/watch?v=jNQXAC9IVRw"
@@ -28,6 +29,98 @@ def check(label: str, ok: bool, detail: str = "") -> bool:
     icon = ICON_OK if ok else FAIL
     print(f"  {icon} {label}" + (f": {detail}" if detail else ""))
     return ok
+
+
+_IP_CHECK_URL = "https://api.ipify.org"
+_IP_CHECK_TIMEOUT = 10
+
+
+def _fetch_ip_direct() -> str:
+    """Fetch WAN IP without any proxy (urllib ignores PROXY_URL — it's yt-dlp only)."""
+    req = urllib.request.Request(_IP_CHECK_URL, headers={"User-Agent": "curl/8"})  # noqa: S310
+    with urllib.request.urlopen(req, timeout=_IP_CHECK_TIMEOUT) as resp:  # noqa: S310
+        return resp.read().decode().strip()
+
+
+def _fetch_ip_via_socks5(proxy_url: str) -> str:
+    """Fetch WAN IP through the SOCKS5 proxy using a raw socket tunnel."""
+    parsed = urllib.parse.urlparse(proxy_url)
+    proxy_host = parsed.hostname or ""
+    proxy_port = parsed.port or 1080
+
+    # Open SOCKS5 tunnel to api.ipify.org:443 — but we use port 80 (plain HTTP)
+    # to avoid TLS complexity in a raw socket; ipify supports both.
+    target_host = "api.ipify.org"
+    target_port = 80
+    target_bytes = target_host.encode()
+
+    with socket.create_connection(
+        (proxy_host, proxy_port), timeout=_IP_CHECK_TIMEOUT
+    ) as s:
+        # Greeting
+        s.sendall(b"\x05\x01\x00")
+        reply = s.recv(2)
+        if len(reply) < 2 or reply[1] != 0x00:
+            raise OSError(f"SOCKS5 auth negotiation failed: {reply!r}")
+
+        # CONNECT request (ATYP=3 domain name)
+        s.sendall(
+            b"\x05\x01\x00\x03"
+            + bytes([len(target_bytes)])
+            + target_bytes
+            + target_port.to_bytes(2, "big")
+        )
+        # Read response (at least 10 bytes for IPv4 reply)
+        resp = s.recv(256)
+        if len(resp) < 2 or resp[1] != 0x00:
+            raise OSError(f"SOCKS5 CONNECT failed: {resp!r}")
+
+        # Send minimal HTTP/1.0 GET (no keep-alive, so server closes after response)
+        s.sendall(
+            (
+                f"GET / HTTP/1.0\r\nHost: {target_host}\r\nUser-Agent: curl/8\r\n\r\n"
+            ).encode()
+        )
+        raw = b""
+        while chunk := s.recv(4096):
+            raw += chunk
+
+    body = raw.split(b"\r\n\r\n", 1)[-1].decode().strip()
+    if not body:
+        raise OSError("empty response from ipify")
+    return body
+
+
+def _check_egress_differs(proxy_url: str) -> int:
+    """Return 0 (pass) if proxy egress IP differs from direct IP, 1 (fail) otherwise."""
+    direct_ip = ""
+    proxy_ip = ""
+    try:
+        direct_ip = _fetch_ip_direct()
+    except Exception as exc:
+        check("egress IP check", False, f"direct fetch failed: {exc}")
+        return 1
+
+    try:
+        proxy_ip = _fetch_ip_via_socks5(proxy_url)
+    except Exception as exc:
+        check("egress IP check", False, f"proxy fetch failed: {exc}")
+        return 1
+
+    if direct_ip == proxy_ip:
+        check(
+            "egress IP differs from direct",
+            False,
+            f"both are {direct_ip} — proxy is not routing through a different path",
+        )
+        return 1
+
+    check(
+        "egress IP differs from direct",
+        True,
+        f"direct={direct_ip}  proxy={proxy_ip}",
+    )
+    return 0
 
 
 def main() -> int:
@@ -93,6 +186,10 @@ def main() -> int:
             socks5_detail = str(exc)
         if not check("SOCKS5 handshake", socks5_ok, socks5_detail):
             failures += 1
+
+    # --- 4b. Egress IP differs from direct IP ---
+    if proxy_url and urllib.parse.urlparse(proxy_url).scheme in ("socks5", "socks5h"):
+        failures += _check_egress_differs(proxy_url)
 
     # --- 5. Extraction check (no download) ---
     print("\n  Testing yt-dlp extract (no download)...")
