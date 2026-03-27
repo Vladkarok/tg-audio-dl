@@ -135,5 +135,5 @@ jobs:
             # Restart bot with zero-downtime (api keeps running)
             docker compose up -d --force-recreate bot
 
-            # Clean up dangling images to save disk
-            docker image prune -f
+            # Remove all unused images (old tagged versions + dangling) to prevent disk exhaustion
+            docker image prune -af
