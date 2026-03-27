@@ -439,8 +439,6 @@ class AudioDownloader:
             "socket_timeout": self._download_timeout,
             # Explicitly enable Node.js for YouTube JS signature challenges
             "js_runtimes": {"node": {}},
-            # Use iOS player client to bypass bot detection on datacenter/proxy IPs
-            "extractor_args": {"youtube": {"player_client": ["ios"]}},
         }
         if self._proxy_url is not None:
             opts["proxy"] = self._proxy_url
