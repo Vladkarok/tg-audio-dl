@@ -1,0 +1,24 @@
+name: GHCR Cleanup
+
+on:
+  workflow_run:
+    workflows: ["CI/CD"]
+    types: [completed]
+    branches: [master]
+  workflow_dispatch:
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    permissions:
+      packages: write
+
+    steps:
+      - name: Delete old package versions (keep 5 latest)
+        uses: actions/delete-package-versions@e5bc658cc4c965c472efe991f8beea3981499c55 # v5
+        with:
+          package-name: youtube-download-bot
+          package-type: container
+          min-versions-to-keep: 5
+          delete-only-untagged-versions: false
