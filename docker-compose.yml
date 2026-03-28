@@ -53,7 +53,10 @@ services:
     cap_drop:
       - ALL
     healthcheck:
-      test: ["CMD-SHELL", "grep -q src.main /proc/1/cmdline"]
+      # /proc/1/comm contains just the executable name (e.g. "python3"),
+      # which is stable across Python releases and doesn't depend on
+      # argv[0] content like the old /proc/1/cmdline grep did.
+      test: ["CMD-SHELL", "grep -qi python /proc/1/comm 2>/dev/null"]
       interval: 30s
       timeout: 5s
       retries: 3

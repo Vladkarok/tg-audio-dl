@@ -184,6 +184,12 @@ class Settings(BaseSettings):
             raise ValueError("S3_BUCKET must be set when S3_ENABLED=True")
         # AWS keys are optional — boto3 falls back to its credential chain
         # (IAM roles, instance profiles, env vars, ~/.aws/credentials, etc.)
+        if self.TMP_MAX_AGE_SECONDS <= self.DOWNLOAD_TIMEOUT_SECONDS:
+            raise ValueError(
+                f"TMP_MAX_AGE_SECONDS ({self.TMP_MAX_AGE_SECONDS}) must be greater "
+                f"than DOWNLOAD_TIMEOUT_SECONDS ({self.DOWNLOAD_TIMEOUT_SECONDS}) "
+                "to avoid deleting files that are still being downloaded"
+            )
         return self
 
 

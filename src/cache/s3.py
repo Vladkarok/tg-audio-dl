@@ -11,6 +11,7 @@ All S3 errors are caught and logged; operations degrade gracefully
 import asyncio
 import contextlib
 import logging
+import uuid
 from collections.abc import Callable
 from pathlib import Path
 
@@ -81,6 +82,22 @@ class S3Cache(CacheBackend):
         return error.get("Code", ""), error.get("Message", "")
 
     # ------------------------------------------------------------------
+    # Startup validation
+    # ------------------------------------------------------------------
+
+    async def probe(self) -> None:
+        """Verify S3 credentials and bucket access. Raises on failure.
+
+        Call once at startup (post_init) to fail fast on misconfiguration
+        rather than silently degrading on the first cache operation.
+        """
+
+        def _head() -> None:
+            self._client.head_bucket(Bucket=self._bucket)
+
+        await _run_blocking(_head)
+
+    # ------------------------------------------------------------------
     # CacheBackend interface
     # ------------------------------------------------------------------
 
@@ -92,9 +109,12 @@ class S3Cache(CacheBackend):
             key = self._find_s3_key(video_id)
             if key is None:
                 return None
-            # Derive local extension from the discovered S3 key
+            # Derive local extension from the discovered S3 key.
+            # Use a unique temp name to prevent concurrent get() calls for
+            # the same video_id from overwriting each other's partial download.
             suffix = Path(key).suffix
-            local_path = self._local_tmp_dir / f"{video_id}{suffix}"
+            tmp_name = f"{video_id}_{uuid.uuid4().hex[:8]}{suffix}"
+            local_path = self._local_tmp_dir / tmp_name
             self._client.download_file(self._bucket, key, str(local_path))
             return local_path
 

@@ -1,5 +1,6 @@
 """Cache layer: CompositeCache and create_cache factory."""
 
+import asyncio
 import logging
 from pathlib import Path
 
@@ -26,6 +27,10 @@ class CompositeCache(CacheBackend):
     def __init__(self, disk: DiskCache, s3: S3Cache) -> None:
         self.disk = disk
         self.s3 = s3
+        # Per-video_id locks to serialise concurrent S3 → disk backfills.
+        # Two simultaneous get() misses for the same ID would otherwise both
+        # download from S3 and write over each other's sidecar files.
+        self._backfill_locks: dict[str, asyncio.Lock] = {}
 
     async def get(self, video_id: str) -> Path | None:
         # L1: disk
@@ -33,16 +38,27 @@ class CompositeCache(CacheBackend):
         if path is not None:
             return path
 
-        # L2: S3
-        path = await self.s3.get(video_id)
-        if path is not None:
-            # Backfill disk
-            try:
-                path = await self.disk.put(video_id, path)
-            except Exception as exc:
-                logger.warning(
-                    "CompositeCache: disk backfill failed for %s: %s", video_id, exc
-                )
+        # L2: S3 — serialise backfill per video_id to avoid concurrent
+        # downloads writing to the same cache slot simultaneously.
+        if video_id not in self._backfill_locks:
+            self._backfill_locks[video_id] = asyncio.Lock()
+        async with self._backfill_locks[video_id]:
+            # Re-check disk: another coroutine may have backfilled while we
+            # were waiting for the lock.
+            path = await self.disk.get(video_id)
+            if path is not None:
+                return path
+
+            path = await self.s3.get(video_id)
+            if path is not None:
+                try:
+                    path = await self.disk.put(video_id, path)
+                except Exception as exc:
+                    logger.warning(
+                        "CompositeCache: disk backfill failed for %s: %s",
+                        video_id,
+                        exc,
+                    )
         return path
 
     async def put(self, video_id: str, file_path: Path) -> Path:

@@ -137,6 +137,9 @@ class AudioDownloader:
         # same ID.  The refcount tracks how many callers are using (or waiting
         # on) a given lock so we only clean up once the last one leaves.
         self._inflight: dict[str, tuple[asyncio.Lock, int]] = {}
+        # Protects all reads and writes to _inflight to make refcount
+        # increments and decrements atomic.
+        self._inflight_lock = asyncio.Lock()
 
     # ------------------------------------------------------------------
     # Public API
@@ -158,13 +161,16 @@ class AudioDownloader:
         Raises DownloadError (or subclass) on failure.
         """
         media_key = parsed_url.video_id or parsed_url.canonical_url
-        # Register interest (bump refcount) before acquiring the lock
-        if media_key in self._inflight:
-            lock, count = self._inflight[media_key]
-            self._inflight[media_key] = (lock, count + 1)
-        else:
-            lock = asyncio.Lock()
-            self._inflight[media_key] = (lock, 1)
+        # Register interest (bump refcount) atomically before acquiring the
+        # per-media lock.  _inflight_lock is held only for the brief dict
+        # operations; it is NOT held during the actual download.
+        async with self._inflight_lock:
+            if media_key in self._inflight:
+                lock, count = self._inflight[media_key]
+                self._inflight[media_key] = (lock, count + 1)
+            else:
+                lock = asyncio.Lock()
+                self._inflight[media_key] = (lock, 1)
 
         try:
             async with lock, self._semaphore:
@@ -176,17 +182,18 @@ class AudioDownloader:
                     track_ready_callback,
                 )
         finally:
-            # Decrement refcount; remove entry only when no one else
-            # is using or waiting on this lock.  Wrapping the lock
+            # Decrement refcount atomically; remove entry only when no one
+            # else is using or waiting on this lock.  Wrapping the lock
             # acquisition ensures cancellation during the wait still
             # decrements the counter.
-            entry = self._inflight.get(media_key)
-            if entry is not None:
-                _, count = entry
-                if count <= 1:
-                    self._inflight.pop(media_key, None)
-                else:
-                    self._inflight[media_key] = (lock, count - 1)
+            async with self._inflight_lock:
+                entry = self._inflight.get(media_key)
+                if entry is not None:
+                    _, count = entry
+                    if count <= 1:
+                        self._inflight.pop(media_key, None)
+                    else:
+                        self._inflight[media_key] = (lock, count - 1)
 
     async def _download_inner(
         self,
@@ -454,7 +461,12 @@ class AudioDownloader:
 
         # File on disk always uses yt-dlp's own ID
         file_path = self._find_audio_file(ydl_id)
-        file_size = file_path.stat().st_size
+        try:
+            file_size = file_path.stat().st_size
+        except FileNotFoundError as exc:
+            raise DownloadError(
+                f"Downloaded file disappeared before processing for id={ydl_id!r}"
+            ) from exc
 
         if file_size > self._max_file_size_bytes:
             raise FileTooLargeError(file_size, self._max_file_size_bytes)
@@ -483,6 +495,7 @@ class AudioDownloader:
                     for ch in raw_chapters
                     if isinstance(ch.get("start_time"), (int, float))
                     and isinstance(ch.get("title"), str)
+                    and ch["title"].strip()  # Skip blank chapter titles
                 )
                 or None
             )
