@@ -33,8 +33,7 @@ from src.downloader.client import (
     FileTooLargeError,
     VideoUnavailableError,
 )
-from src.downloader.url_parser import URLType
-from src.downloader.url_parser import ParsedURL, extract_media_urls
+from src.downloader.url_parser import ParsedURL, URLType, extract_media_urls
 from src.utils.sanitize import clean_title, sanitize_filename
 
 logger = logging.getLogger(__name__)

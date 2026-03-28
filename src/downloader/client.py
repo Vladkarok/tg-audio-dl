@@ -430,7 +430,9 @@ class AudioDownloader:
             raise
         except Exception as exc:
             raise DownloadError(
-                self._sanitize_error(f"Unexpected error fetching playlist metadata: {exc}")
+                self._sanitize_error(
+                    f"Unexpected error fetching playlist metadata: {exc}"
+                )
             ) from exc
 
     # ------------------------------------------------------------------

@@ -367,8 +367,6 @@ class TestTrackReadyCallback:
         flat_mock = _make_ydl_mock(FAKE_FLAT_PLAYLIST_INFO)
         per_track_mocks = [_make_ydl_mock(e) for e in FAKE_PLAYLIST_ENTRIES]
 
-        from src.downloader.client import DownloadResult
-
         ready_results: list[DownloadResult] = []
 
         async def on_track_ready(result: DownloadResult) -> None:
