@@ -33,6 +33,7 @@ from src.downloader.client import (
     FileTooLargeError,
     VideoUnavailableError,
 )
+from src.downloader.url_parser import URLType
 from src.downloader.url_parser import ParsedURL, extract_media_urls
 from src.utils.sanitize import clean_title, sanitize_filename
 
@@ -274,10 +275,32 @@ async def _process_url(
         async def on_progress(dp: DownloadProgress) -> None:
             await progress.set_downloading_progress(dp.percentage)
 
+        is_playlist = parsed_url.url_type == URLType.PLAYLIST
+        handled_ids: set[str] = set()
+
+        async def on_track_start(idx: int, total: int, title: str) -> None:
+            await progress.set_playlist_context(
+                track_index=idx, total_tracks=total, track_title=title
+            )
+            await progress.set_step(Step.DOWNLOADING, StepStatus.ACTIVE)
+
+        async def on_track_ready(result: DownloadResult) -> None:
+            handled_ids.add(result.video_id)
+            await progress.set_step(Step.UPLOADING, StepStatus.ACTIVE)
+            await _cache_and_upload_one(
+                bot=context.bot,
+                chat_id=update.message.chat_id,
+                result=result,
+                progress=progress,
+                cache=cache,
+            )
+
         results = await downloader.download(
             parsed_url,
             progress_callback=on_progress,
             max_tracks=settings.PLAYLIST_MAX_TRACKS,
+            track_start_callback=on_track_start if is_playlist else None,
+            track_ready_callback=on_track_ready if is_playlist else None,
         )
     except FileTooLargeError as exc:
         logger.exception("File too large for user download")
@@ -301,34 +324,18 @@ async def _process_url(
     # --- Cache store + Upload -------------------------------------------
     await progress.set_step(Step.DOWNLOADING, StepStatus.DONE)
 
-    total = len(results)
-    for idx, result in enumerate(results, start=1):
-        if total > 1:
-            await progress.set_playlist_context(track_index=idx, total_tracks=total)
+    # Upload any results not already streamed via on_track_ready
+    for result in results:
+        if result.video_id in handled_ids:
+            continue
         await progress.set_step(Step.UPLOADING, StepStatus.ACTIVE)
-
-        # Store in cache — put() moves the file, so use the returned path
-        stored_path: Path | None = None
-        try:
-            stored_path = await cache.put(result.video_id, result.file_path)
-        except Exception:
-            logger.exception("Cache put failed for video_id=%s", result.video_id)
-
-        # Use cached path if available, otherwise fall back to original
-        send_result = (
-            dataclasses.replace(result, file_path=stored_path)
-            if stored_path
-            else result
+        await _cache_and_upload_one(
+            bot=context.bot,
+            chat_id=update.message.chat_id,
+            result=result,
+            progress=progress,
+            cache=cache,
         )
-        msg = await _send_audio(
-            context.bot, update.message.chat_id, send_result, progress
-        )
-        if msg.audio:
-            with contextlib.suppress(Exception):
-                await cache.store_file_id(result.video_id, msg.audio.file_id)
-        if result.chapters:
-            with contextlib.suppress(Exception):
-                await cache.store_chapters(result.video_id, result.chapters)
 
     await progress.set_step(Step.UPLOADING, StepStatus.DONE)
     await asyncio.sleep(2)
@@ -480,6 +487,34 @@ def _extract_thumbnail(file_path: Path) -> InputFile | None:
     except Exception:
         logger.debug("Could not extract thumbnail from %s", file_path, exc_info=True)
     return None
+
+
+async def _cache_and_upload_one(
+    bot: Bot,
+    chat_id: int,
+    result: DownloadResult,
+    progress: ProgressManager,
+    cache: CacheBackend,
+) -> None:
+    """Cache a DownloadResult then upload it to Telegram."""
+    stored_path: Path | None = None
+    try:
+        stored_path = await cache.put(result.video_id, result.file_path)
+    except Exception:
+        logger.exception("Cache put failed for video_id=%s", result.video_id)
+
+    send_result = (
+        dataclasses.replace(result, file_path=stored_path)
+        if stored_path
+        else result
+    )
+    msg = await _send_audio(bot, chat_id, send_result, progress)
+    if msg.audio:
+        with contextlib.suppress(Exception):
+            await cache.store_file_id(result.video_id, msg.audio.file_id)
+    if result.chapters:
+        with contextlib.suppress(Exception):
+            await cache.store_chapters(result.video_id, result.chapters)
 
 
 async def _send_audio(

@@ -76,6 +76,20 @@ FAKE_PLAYLIST_INFO: dict = {
     "entries": FAKE_PLAYLIST_ENTRIES,
 }
 
+# Flat metadata entries (returned by extract_flat — no audio info, just id+title)
+FAKE_FLAT_ENTRIES: list[dict] = [
+    {"id": "aaaaaaaaaaa", "title": "Track 1", "_type": "url"},
+    {"id": "bbbbbbbbbbb", "title": "Track 2", "_type": "url"},
+    {"id": "ccccccccccc", "title": "Track 3", "_type": "url"},
+]
+
+FAKE_FLAT_PLAYLIST_INFO: dict = {
+    "id": PLAYLIST_ID,
+    "title": "My Playlist",
+    "_type": "playlist",
+    "entries": FAKE_FLAT_ENTRIES,
+}
+
 
 def _make_parsed_single(video_id: str = VIDEO_ID) -> ParsedURL:
     return ParsedURL(
@@ -232,7 +246,7 @@ class TestDownloadRadioMixAsSingle:
 
 
 class TestDownloadPlaylistReturnsMultiple:
-    """PLAYLIST URL returns one DownloadResult per entry."""
+    """PLAYLIST URL returns one DownloadResult per entry via per-track downloads."""
 
     async def test_download_playlist_returns_multiple(self, tmp_path: Path) -> None:
         for entry in FAKE_PLAYLIST_ENTRIES:
@@ -242,10 +256,14 @@ class TestDownloadPlaylistReturnsMultiple:
             download_dir=tmp_path, max_file_size_bytes=10 * 1024 * 1024
         )
 
-        def fake_ydl_cls(opts):
-            return _make_ydl_mock(FAKE_PLAYLIST_INFO)
+        # Flat call returns metadata; per-track calls return individual entry info
+        flat_mock = _make_ydl_mock(FAKE_FLAT_PLAYLIST_INFO)
+        per_track_mocks = [_make_ydl_mock(e) for e in FAKE_PLAYLIST_ENTRIES]
 
-        with patch("src.downloader.client.yt_dlp.YoutubeDL", side_effect=fake_ydl_cls):
+        with patch(
+            "src.downloader.client.yt_dlp.YoutubeDL",
+            side_effect=[flat_mock, *per_track_mocks],
+        ):
             results = await downloader.download(_make_parsed_playlist(), max_tracks=10)
 
         assert len(results) == 3
@@ -259,15 +277,13 @@ class TestDownloadPlaylistReturnsMultiple:
 
 
 class TestDownloadPlaylistRespectsMaxTracks:
-    """playlistend in ydl_opts matches the max_tracks argument."""
+    """max_tracks is passed to the flat metadata fetch and limits results."""
 
     async def test_download_playlist_respects_max_tracks(self, tmp_path: Path) -> None:
         for entry in FAKE_PLAYLIST_ENTRIES[:2]:
             _create_fake_m4a(tmp_path, entry["id"])
 
-        # Return only the first 2 entries (simulating yt-dlp honouring playlistend)
-        truncated_info = {**FAKE_PLAYLIST_INFO, "entries": FAKE_PLAYLIST_ENTRIES[:2]}
-
+        truncated_flat = {**FAKE_FLAT_PLAYLIST_INFO, "entries": FAKE_FLAT_ENTRIES[:2]}
         downloader = AudioDownloader(
             download_dir=tmp_path, max_file_size_bytes=10 * 1024 * 1024
         )
@@ -276,13 +292,102 @@ class TestDownloadPlaylistRespectsMaxTracks:
 
         def fake_ydl_cls(opts):
             captured_opts.append(opts)
-            return _make_ydl_mock(truncated_info)
+            # First call is flat metadata; subsequent are per-track
+            if opts.get("extract_flat"):
+                return _make_ydl_mock(truncated_flat)
+            # Determine which track based on call count (skip flat call)
+            idx = sum(1 for o in captured_opts if not o.get("extract_flat")) - 1
+            return _make_ydl_mock(FAKE_PLAYLIST_ENTRIES[idx])
 
         with patch("src.downloader.client.yt_dlp.YoutubeDL", side_effect=fake_ydl_cls):
             results = await downloader.download(_make_parsed_playlist(), max_tracks=2)
 
-        assert captured_opts[0]["playlistend"] == 2
+        # Flat fetch must have playlistend=2
+        flat_opts = next(o for o in captured_opts if o.get("extract_flat"))
+        assert flat_opts["playlistend"] == 2
         assert len(results) == 2
+
+
+# ---------------------------------------------------------------------------
+# test_track_start_callback
+# ---------------------------------------------------------------------------
+
+
+class TestTrackStartCallback:
+    """track_start_callback fires with (index, total, title) before each track."""
+
+    async def test_track_start_callback_called_per_track(self, tmp_path: Path) -> None:
+        for entry in FAKE_PLAYLIST_ENTRIES:
+            _create_fake_m4a(tmp_path, entry["id"])
+
+        downloader = AudioDownloader(
+            download_dir=tmp_path, max_file_size_bytes=10 * 1024 * 1024
+        )
+
+        flat_mock = _make_ydl_mock(FAKE_FLAT_PLAYLIST_INFO)
+        per_track_mocks = [_make_ydl_mock(e) for e in FAKE_PLAYLIST_ENTRIES]
+
+        received: list[tuple[int, int, str]] = []
+
+        async def on_track_start(idx: int, total: int, title: str) -> None:
+            received.append((idx, total, title))
+
+        with patch(
+            "src.downloader.client.yt_dlp.YoutubeDL",
+            side_effect=[flat_mock, *per_track_mocks],
+        ):
+            await downloader.download(
+                _make_parsed_playlist(),
+                max_tracks=10,
+                track_start_callback=on_track_start,
+            )
+
+        assert len(received) == 3
+        assert received[0] == (1, 3, "Track 1")
+        assert received[1] == (2, 3, "Track 2")
+        assert received[2] == (3, 3, "Track 3")
+
+
+# ---------------------------------------------------------------------------
+# test_track_ready_callback
+# ---------------------------------------------------------------------------
+
+
+class TestTrackReadyCallback:
+    """track_ready_callback fires immediately after each track is downloaded."""
+
+    async def test_track_ready_callback_fires_per_track(self, tmp_path: Path) -> None:
+        for entry in FAKE_PLAYLIST_ENTRIES:
+            _create_fake_m4a(tmp_path, entry["id"])
+
+        downloader = AudioDownloader(
+            download_dir=tmp_path, max_file_size_bytes=10 * 1024 * 1024
+        )
+
+        flat_mock = _make_ydl_mock(FAKE_FLAT_PLAYLIST_INFO)
+        per_track_mocks = [_make_ydl_mock(e) for e in FAKE_PLAYLIST_ENTRIES]
+
+        from src.downloader.client import DownloadResult
+
+        ready_results: list[DownloadResult] = []
+
+        async def on_track_ready(result: DownloadResult) -> None:
+            ready_results.append(result)
+
+        with patch(
+            "src.downloader.client.yt_dlp.YoutubeDL",
+            side_effect=[flat_mock, *per_track_mocks],
+        ):
+            results = await downloader.download(
+                _make_parsed_playlist(),
+                max_tracks=10,
+                track_ready_callback=on_track_ready,
+            )
+
+        # Callback fired once per track
+        assert len(ready_results) == 3
+        # Same results returned from download()
+        assert {r.video_id for r in ready_results} == {r.video_id for r in results}
 
 
 # ---------------------------------------------------------------------------
@@ -656,7 +761,7 @@ class TestThumbnailUrlValidation:
 
 
 class TestDownloadPlaylistNoplaylistFalse:
-    """For PLAYLIST URLs, noplaylist must be False in ydl_opts."""
+    """Flat metadata call uses noplaylist=False; per-track calls use noplaylist=True."""
 
     async def test_download_playlist_noplaylist_false(self, tmp_path: Path) -> None:
         for entry in FAKE_PLAYLIST_ENTRIES:
@@ -670,12 +775,16 @@ class TestDownloadPlaylistNoplaylistFalse:
 
         def fake_ydl_cls(opts):
             captured_opts.append(opts)
-            return _make_ydl_mock(FAKE_PLAYLIST_INFO)
+            if opts.get("extract_flat"):
+                return _make_ydl_mock(FAKE_FLAT_PLAYLIST_INFO)
+            idx = sum(1 for o in captured_opts if not o.get("extract_flat")) - 1
+            return _make_ydl_mock(FAKE_PLAYLIST_ENTRIES[idx])
 
         with patch("src.downloader.client.yt_dlp.YoutubeDL", side_effect=fake_ydl_cls):
             await downloader.download(_make_parsed_playlist(), max_tracks=10)
 
-        assert captured_opts[0]["noplaylist"] is False
+        flat_opts = next(o for o in captured_opts if o.get("extract_flat"))
+        assert flat_opts["noplaylist"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -1003,7 +1112,7 @@ class TestDownloadTimeout:
             await downloader.download(_make_parsed_single())
 
     async def test_playlist_download_timeout_raises(self, tmp_path: Path) -> None:
-        """A playlist download that exceeds timeout raises DownloadError."""
+        """A playlist flat metadata fetch that exceeds timeout raises DownloadError."""
         import time
 
         def slow_extract(*_args, **_kwargs):
@@ -1015,13 +1124,14 @@ class TestDownloadTimeout:
         mock_ydl.__exit__ = MagicMock(return_value=False)
         mock_ydl.extract_info.side_effect = slow_extract
 
+        # download_timeout=1 now governs the flat metadata fetch too
         downloader = AudioDownloader(
             tmp_path, max_file_size_bytes=10**9, download_timeout=1
         )
 
         with (
             patch("src.downloader.client.yt_dlp.YoutubeDL", return_value=mock_ydl),
-            pytest.raises(DownloadError, match="timed out"),
+            pytest.raises(DownloadError, match="[Tt]imed out"),
         ):
             await downloader.download(_make_parsed_playlist())
 
@@ -1128,52 +1238,58 @@ class TestPlaylistSparseEntries:
     """Playlist downloads should skip None and incomplete entries."""
 
     async def test_none_entry_skipped(self, tmp_path: Path) -> None:
-        """None entry in playlist should be skipped, not crash."""
+        """None entry in flat metadata should be skipped; valid entry downloads."""
         good_entry = FAKE_PLAYLIST_ENTRIES[0]
         _create_fake_m4a(tmp_path, good_entry["id"])
 
-        info_with_none = {
-            **FAKE_PLAYLIST_INFO,
-            "entries": [None, good_entry, None],
+        # Flat metadata: None entries filtered, one valid entry kept
+        flat_info = {
+            **FAKE_FLAT_PLAYLIST_INFO,
+            "entries": [None, {"id": good_entry["id"], "title": good_entry["title"]}, None],
         }
-        mock_ydl = _make_ydl_mock(info_with_none)
+        flat_mock = _make_ydl_mock(flat_info)
+        track_mock = _make_ydl_mock(good_entry)
 
         downloader = AudioDownloader(download_dir=tmp_path, max_file_size_bytes=10**9)
 
-        with patch("src.downloader.client.yt_dlp.YoutubeDL", return_value=mock_ydl):
+        with patch(
+            "src.downloader.client.yt_dlp.YoutubeDL", side_effect=[flat_mock, track_mock]
+        ):
             results = await downloader.download(_make_parsed_playlist())
 
         assert len(results) == 1
         assert results[0].video_id == good_entry["id"]
 
     async def test_entry_without_id_skipped(self, tmp_path: Path) -> None:
-        """Entry missing 'id' key should be skipped."""
+        """Entry missing 'id' key in flat metadata should be skipped."""
         good_entry = FAKE_PLAYLIST_ENTRIES[0]
         _create_fake_m4a(tmp_path, good_entry["id"])
-        bad_entry = {"title": "No ID track"}
 
-        info = {
-            **FAKE_PLAYLIST_INFO,
-            "entries": [bad_entry, good_entry],
+        flat_info = {
+            **FAKE_FLAT_PLAYLIST_INFO,
+            "entries": [{"title": "No ID track"}, {"id": good_entry["id"], "title": good_entry["title"]}],
         }
-        mock_ydl = _make_ydl_mock(info)
+        flat_mock = _make_ydl_mock(flat_info)
+        track_mock = _make_ydl_mock(good_entry)
 
         downloader = AudioDownloader(download_dir=tmp_path, max_file_size_bytes=10**9)
 
-        with patch("src.downloader.client.yt_dlp.YoutubeDL", return_value=mock_ydl):
+        with patch(
+            "src.downloader.client.yt_dlp.YoutubeDL", side_effect=[flat_mock, track_mock]
+        ):
             results = await downloader.download(_make_parsed_playlist())
 
         assert len(results) == 1
 
     async def test_all_entries_none_raises(self, tmp_path: Path) -> None:
-        """Playlist where all entries are None should raise DownloadError."""
-        info = {**FAKE_PLAYLIST_INFO, "entries": [None, None]}
-        mock_ydl = _make_ydl_mock(info)
+        """Playlist where flat metadata returns only None entries raises DownloadError."""
+        flat_info = {**FAKE_FLAT_PLAYLIST_INFO, "entries": [None, None]}
+        flat_mock = _make_ydl_mock(flat_info)
 
         downloader = AudioDownloader(download_dir=tmp_path, max_file_size_bytes=10**9)
 
         with (
-            patch("src.downloader.client.yt_dlp.YoutubeDL", return_value=mock_ydl),
-            pytest.raises(DownloadError, match="All 2 playlist entries"),
+            patch("src.downloader.client.yt_dlp.YoutubeDL", return_value=flat_mock),
+            pytest.raises(DownloadError, match="empty or unavailable"),
         ):
             await downloader.download(_make_parsed_playlist())
