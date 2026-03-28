@@ -184,6 +184,10 @@ class Settings(BaseSettings):
             raise ValueError("S3_BUCKET must be set when S3_ENABLED=True")
         # AWS keys are optional — boto3 falls back to its credential chain
         # (IAM roles, instance profiles, env vars, ~/.aws/credentials, etc.)
+        return self
+
+    @model_validator(mode="after")
+    def validate_tmp_age_vs_timeout(self) -> "Settings":
         if self.TMP_MAX_AGE_SECONDS <= self.DOWNLOAD_TIMEOUT_SECONDS:
             raise ValueError(
                 f"TMP_MAX_AGE_SECONDS ({self.TMP_MAX_AGE_SECONDS}) must be greater "

@@ -261,8 +261,14 @@ async def _process_url(
                 context.bot, update.message.chat_id, result, progress
             )
             if msg.audio:
-                with contextlib.suppress(Exception):
+                try:
                     await cache.store_file_id(video_id, msg.audio.file_id)
+                except Exception:
+                    logger.warning(
+                        "Failed to store file_id for %s — fast resend unavailable",
+                        video_id,
+                        exc_info=True,
+                    )
             await asyncio.sleep(2)
             await progress.delete()
             return

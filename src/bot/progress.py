@@ -251,18 +251,25 @@ class ProgressManager:
             return
 
         now = time.monotonic()
-        if now - self._last_edit_time < _DEBOUNCE_SECONDS:
+        elapsed = now - self._last_edit_time
+        if elapsed < _DEBOUNCE_SECONDS:
             # Schedule a deferred flush only if one is not already pending.
+            # Sleep only for the remaining time so the flush happens at the
+            # end of the current window, not a full debounce period later.
+            remaining = _DEBOUNCE_SECONDS - elapsed
             if self._deferred_flush_task is None or self._deferred_flush_task.done():
-                self._deferred_flush_task = asyncio.create_task(self._deferred_flush())
+                self._deferred_flush_task = asyncio.create_task(
+                    self._deferred_flush(remaining)
+                )
             return
 
         await self._flush_edit()
 
-    async def _deferred_flush(self) -> None:
-        """Wait for the debounce window to expire then flush the message."""
+    async def _deferred_flush(self, delay: float) -> None:
+        """Wait *delay* seconds then flush the message."""
         try:
-            await asyncio.sleep(_DEBOUNCE_SECONDS)
+            await asyncio.sleep(delay)
+            self._deferred_flush_task = None
             await self._flush_edit()
         except asyncio.CancelledError:
             pass
