@@ -503,9 +503,7 @@ async def _cache_and_upload_one(
         logger.exception("Cache put failed for video_id=%s", result.video_id)
 
     send_result = (
-        dataclasses.replace(result, file_path=stored_path)
-        if stored_path
-        else result
+        dataclasses.replace(result, file_path=stored_path) if stored_path else result
     )
     msg = await _send_audio(bot, chat_id, send_result, progress)
     if msg.audio:

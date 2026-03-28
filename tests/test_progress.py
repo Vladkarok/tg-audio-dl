@@ -217,7 +217,9 @@ class TestProgressManagerAsync:
         await pm.create()
         pm._last_edit_time = 0.0
 
-        await pm.set_playlist_context(track_index=3, total_tracks=10, track_title="Song Title")
+        await pm.set_playlist_context(
+            track_index=3, total_tracks=10, track_title="Song Title"
+        )
         assert pm._playlist_track_title == "Song Title"
         text = pm.render()
         assert "Song Title" in text
