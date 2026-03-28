@@ -159,6 +159,8 @@ class ProgressManager:
                 idx += 1
         except asyncio.CancelledError:
             pass
+        except Exception:
+            logger.debug("Animation error for step %s", step, exc_info=True)
 
     async def set_downloading_progress(self, percentage: float | None) -> None:
         """Update DOWNLOADING step with a percentage value. Debounced."""
@@ -192,9 +194,10 @@ class ProgressManager:
         for step in list(self._animation_tasks):
             await self._stop_animation(step)
         if self._message_id is not None:
-            await self._bot.delete_message(
-                chat_id=self._chat_id, message_id=self._message_id
-            )
+            with contextlib.suppress(Exception):
+                await self._bot.delete_message(
+                    chat_id=self._chat_id, message_id=self._message_id
+                )
             self._message_id = None
 
     def render(self) -> str:
