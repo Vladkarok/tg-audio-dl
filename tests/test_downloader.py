@@ -1243,7 +1243,11 @@ class TestPlaylistSparseEntries:
         # Flat metadata: None entries filtered, one valid entry kept
         flat_info = {
             **FAKE_FLAT_PLAYLIST_INFO,
-            "entries": [None, {"id": good_entry["id"], "title": good_entry["title"]}, None],
+            "entries": [
+                None,
+                {"id": good_entry["id"], "title": good_entry["title"]},
+                None,
+            ],
         }
         flat_mock = _make_ydl_mock(flat_info)
         track_mock = _make_ydl_mock(good_entry)
@@ -1251,7 +1255,8 @@ class TestPlaylistSparseEntries:
         downloader = AudioDownloader(download_dir=tmp_path, max_file_size_bytes=10**9)
 
         with patch(
-            "src.downloader.client.yt_dlp.YoutubeDL", side_effect=[flat_mock, track_mock]
+            "src.downloader.client.yt_dlp.YoutubeDL",
+            side_effect=[flat_mock, track_mock],
         ):
             results = await downloader.download(_make_parsed_playlist())
 
@@ -1265,7 +1270,10 @@ class TestPlaylistSparseEntries:
 
         flat_info = {
             **FAKE_FLAT_PLAYLIST_INFO,
-            "entries": [{"title": "No ID track"}, {"id": good_entry["id"], "title": good_entry["title"]}],
+            "entries": [
+                {"title": "No ID track"},
+                {"id": good_entry["id"], "title": good_entry["title"]},
+            ],
         }
         flat_mock = _make_ydl_mock(flat_info)
         track_mock = _make_ydl_mock(good_entry)
@@ -1273,7 +1281,8 @@ class TestPlaylistSparseEntries:
         downloader = AudioDownloader(download_dir=tmp_path, max_file_size_bytes=10**9)
 
         with patch(
-            "src.downloader.client.yt_dlp.YoutubeDL", side_effect=[flat_mock, track_mock]
+            "src.downloader.client.yt_dlp.YoutubeDL",
+            side_effect=[flat_mock, track_mock],
         ):
             results = await downloader.download(_make_parsed_playlist())
 
