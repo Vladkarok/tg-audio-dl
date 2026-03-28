@@ -80,6 +80,7 @@ class ProgressManager:
         self._last_edit_time: float = 0.0
         self._playlist_track: int | None = None
         self._playlist_total: int | None = None
+        self._playlist_track_title: str | None = None
         self._animation_tasks: dict[Step, asyncio.Task[None]] = {}
 
         # Initialise step state: RECEIVED=DONE, rest=PENDING
@@ -165,10 +166,16 @@ class ProgressManager:
         self._steps[Step.DOWNLOADING] = (StepStatus.ACTIVE, detail)
         await self._maybe_edit()
 
-    async def set_playlist_context(self, track_index: int, total_tracks: int) -> None:
-        """Set playlist header (Track X / Y)."""
+    async def set_playlist_context(
+        self,
+        track_index: int,
+        total_tracks: int,
+        track_title: str | None = None,
+    ) -> None:
+        """Set playlist header (Track X / Y) with optional track title."""
         self._playlist_track = track_index
         self._playlist_total = total_tracks
+        self._playlist_track_title = track_title
         await self._maybe_edit()
 
     async def edit_text(self, text: str) -> None:
@@ -196,6 +203,9 @@ class ProgressManager:
             header = (
                 f"🎵 Playlist — Track {self._playlist_track} / {self._playlist_total}"
             )
+            if self._playlist_track_title:
+                title = self._playlist_track_title[:80]
+                header = f"{header}\n📄 {title}"
         else:
             header = "🎵 Processing your request..."
 

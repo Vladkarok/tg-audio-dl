@@ -67,6 +67,37 @@ class TestRender:
         assert "12" in text
         assert "Playlist" in text
 
+    def test_render_playlist_context_with_title(self):
+        bot = make_bot()
+        pm = ProgressManager(bot, chat_id=1, reply_to_message_id=10)
+        pm._playlist_track = 2
+        pm._playlist_total = 8
+        pm._playlist_track_title = "My Awesome Song"
+        text = pm.render()
+        assert "My Awesome Song" in text
+        assert "📄" in text
+        assert "2" in text
+        assert "8" in text
+
+    def test_render_playlist_context_no_title_omits_title_line(self):
+        bot = make_bot()
+        pm = ProgressManager(bot, chat_id=1, reply_to_message_id=10)
+        pm._playlist_track = 1
+        pm._playlist_total = 5
+        text = pm.render()
+        assert "📄" not in text
+
+    def test_render_playlist_context_title_truncated(self):
+        """Titles longer than 80 chars are truncated."""
+        bot = make_bot()
+        pm = ProgressManager(bot, chat_id=1, reply_to_message_id=10)
+        pm._playlist_track = 1
+        pm._playlist_total = 1
+        pm._playlist_track_title = "A" * 100
+        text = pm.render()
+        assert "A" * 80 in text
+        assert "A" * 81 not in text
+
     def test_render_no_percentage(self):
         """DOWNLOADING ACTIVE with no detail shows no percentage."""
         bot = make_bot()
@@ -178,6 +209,28 @@ class TestProgressManagerAsync:
         assert pm._playlist_total == 8
         text = pm.render()
         assert "2" in text and "8" in text
+
+    async def test_set_playlist_context_stores_title(self):
+        """set_playlist_context with track_title stores and renders the title."""
+        bot = make_bot()
+        pm = ProgressManager(bot, chat_id=1, reply_to_message_id=10)
+        await pm.create()
+        pm._last_edit_time = 0.0
+
+        await pm.set_playlist_context(track_index=3, total_tracks=10, track_title="Song Title")
+        assert pm._playlist_track_title == "Song Title"
+        text = pm.render()
+        assert "Song Title" in text
+
+    async def test_set_playlist_context_backward_compat_no_title(self):
+        """set_playlist_context without track_title leaves title as None."""
+        bot = make_bot()
+        pm = ProgressManager(bot, chat_id=1, reply_to_message_id=10)
+        await pm.create()
+        pm._last_edit_time = 0.0
+
+        await pm.set_playlist_context(track_index=1, total_tracks=5)
+        assert pm._playlist_track_title is None
 
 
 class TestUploadAnimation:

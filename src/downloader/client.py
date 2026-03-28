@@ -95,6 +95,8 @@ class FileTooLargeError(DownloadError):
 # ---------------------------------------------------------------------------
 
 ProgressCallback = Callable[[DownloadProgress], Coroutine[Any, Any, None]]
+TrackStartCallback = Callable[[int, int, str], Coroutine[Any, Any, None]]
+TrackReadyCallback = Callable[["DownloadResult"], Coroutine[Any, Any, None]]
 
 
 async def _run_blocking[**P, T](
@@ -145,6 +147,8 @@ class AudioDownloader:
         parsed_url: ParsedURL,
         progress_callback: ProgressCallback | None = None,
         max_tracks: int = 50,
+        track_start_callback: TrackStartCallback | None = None,
+        track_ready_callback: TrackReadyCallback | None = None,
     ) -> list[DownloadResult]:
         """Download audio for a ParsedURL.
 
@@ -165,7 +169,11 @@ class AudioDownloader:
         try:
             async with lock, self._semaphore:
                 return await self._download_inner(
-                    parsed_url, progress_callback, max_tracks
+                    parsed_url,
+                    progress_callback,
+                    max_tracks,
+                    track_start_callback,
+                    track_ready_callback,
                 )
         finally:
             # Decrement refcount; remove entry only when no one else
@@ -185,13 +193,20 @@ class AudioDownloader:
         parsed_url: ParsedURL,
         progress_callback: ProgressCallback | None = None,
         max_tracks: int = 50,
+        track_start_callback: TrackStartCallback | None = None,
+        track_ready_callback: TrackReadyCallback | None = None,
     ) -> list[DownloadResult]:
         """Inner download logic, runs under the concurrency semaphore."""
         loop = asyncio.get_running_loop()
 
         if parsed_url.url_type == URLType.PLAYLIST:
             return await self._download_playlist(
-                parsed_url.canonical_url, max_tracks, progress_callback, loop
+                parsed_url.canonical_url,
+                max_tracks,
+                progress_callback,
+                loop,
+                track_start_callback=track_start_callback,
+                track_ready_callback=track_ready_callback,
             )
 
         # SINGLE or RADIO_MIX
@@ -259,48 +274,118 @@ class AudioDownloader:
 
         return self._build_result(info, cache_id=cache_id)
 
+    async def _fetch_playlist_metadata(
+        self,
+        url: str,
+        max_tracks: int,
+        loop: asyncio.AbstractEventLoop,
+    ) -> list[tuple[str, str]]:
+        """Fetch playlist entry IDs and titles without downloading audio.
+
+        Uses yt-dlp's extract_flat mode for a fast single API call.
+        Returns a list of (track_id, title) pairs capped at max_tracks.
+        """
+        opts: dict[str, Any] = {
+            "quiet": True,
+            "no_warnings": True,
+            "extract_flat": "in_playlist",
+            "noplaylist": False,
+            "playlistend": max_tracks,
+        }
+        if self._proxy_url is not None:
+            opts["proxy"] = self._proxy_url
+        if self._cookies_file is not None:
+            opts["cookiefile"] = self._cookies_file
+
+        try:
+            info = await asyncio.wait_for(
+                _run_blocking(self._run_ydl_flat, opts, url),
+                timeout=self._download_timeout,
+            )
+        except TimeoutError as exc:
+            raise DownloadError("Timed out fetching playlist metadata") from exc
+
+        raw_entries = info.get("entries") or []
+        entries: list[tuple[str, str]] = []
+        for entry in raw_entries:
+            if not isinstance(entry, dict):
+                continue
+            entry_id = entry.get("id") or entry.get("url", "")
+            if not entry_id or not _TRACK_ID_RE.fullmatch(entry_id):
+                # For entries where id is a full URL (SoundCloud), use url field
+                entry_url = entry.get("url", "")
+                if entry_url.startswith(("http://", "https://")):
+                    entry_id = entry_url
+                else:
+                    continue
+            title = entry.get("title") or entry_id
+            entries.append((entry_id, title))
+
+        return entries[:max_tracks]
+
     async def _download_playlist(
         self,
         url: str,
         max_tracks: int,
         progress_callback: ProgressCallback | None,
         loop: asyncio.AbstractEventLoop,
+        track_start_callback: TrackStartCallback | None = None,
+        track_ready_callback: TrackReadyCallback | None = None,
     ) -> list[DownloadResult]:
-        """Run yt-dlp for a playlist URL and return a DownloadResult per entry."""
-        ydl_opts = self._build_opts(
-            noplaylist=False,
-            progress_callback=progress_callback,
-            loop=loop,
-            playlistend=max_tracks,
-        )
+        """Download each playlist track individually, firing callbacks per track."""
+        entries = await self._fetch_playlist_metadata(url, max_tracks, loop)
+        if not entries:
+            raise DownloadError("Playlist is empty or unavailable")
 
-        try:
-            info = await asyncio.wait_for(
-                _run_blocking(self._run_ydl, ydl_opts, url),
-                timeout=self._download_timeout,
-            )
-        except TimeoutError as exc:
-            # No cleanup here — playlist track IDs are unknown pre-download;
-            # partial files in download_dir are overwritten on next attempt.
-            raise DownloadError(
-                f"Playlist download timed out after {self._download_timeout}s"
-            ) from exc
-
-        entries = info.get("entries") or []
+        total = len(entries)
         results: list[DownloadResult] = []
-        for entry in entries:
-            if not isinstance(entry, dict) or "id" not in entry:
-                continue  # skip unavailable/private/deleted tracks
+
+        for idx, (track_id, title) in enumerate(entries, start=1):
+            if track_start_callback is not None:
+                try:
+                    await track_start_callback(idx, total, title)
+                except Exception:
+                    logger.warning(
+                        "track_start_callback raised for track %d/%d", idx, total
+                    )
+
+            # Determine the URL to pass to yt-dlp
+            if track_id.startswith(("http://", "https://")):
+                track_url = track_id
+                yt_id = None
+            else:
+                track_url = f"https://www.youtube.com/watch?v={track_id}"
+                yt_id = track_id
+
             try:
-                results.append(self._build_result(entry))
+                result = await self._download_one(
+                    url=track_url,
+                    yt_id=yt_id,
+                    cache_id=None,
+                    noplaylist=True,
+                    progress_callback=progress_callback,
+                    loop=loop,
+                )
             except FileTooLargeError as exc:
-                logger.warning("Skipping playlist track: %s", exc)
+                logger.warning("Skipping playlist track %s: %s", track_id, exc)
                 continue
             except DownloadError:
-                continue  # skip tracks that fail validation
+                logger.warning("Skipping failed playlist track %s", track_id)
+                continue
+
+            results.append(result)
+
+            if track_ready_callback is not None:
+                try:
+                    await track_ready_callback(result)
+                except Exception:
+                    logger.warning(
+                        "track_ready_callback raised for track %d/%d", idx, total
+                    )
+
         if not results and entries:
             raise DownloadError(
-                f"All {len(entries)} playlist entries were unavailable or failed"
+                f"All {total} playlist entries were unavailable or failed"
             )
         return results
 
@@ -325,6 +410,27 @@ class AudioDownloader:
         except Exception as exc:
             raise DownloadError(
                 self._sanitize_error(f"Unexpected download error: {exc}")
+            ) from exc
+
+    def _run_ydl_flat(self, ydl_opts: dict[str, Any], url: str) -> dict[str, Any]:
+        """Call yt-dlp synchronously with extract_flat; no audio downloaded."""
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info: dict[str, Any] = ydl.extract_info(url, download=False)
+            return info
+        except (
+            yt_dlp.utils.DownloadError,
+            yt_dlp.utils.ExtractorError,
+            yt_dlp.utils.UnsupportedError,
+        ) as exc:
+            raise DownloadError(
+                self._sanitize_error(f"Failed to fetch playlist metadata: {exc}")
+            ) from exc
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            raise DownloadError(
+                self._sanitize_error(f"Unexpected error fetching playlist metadata: {exc}")
             ) from exc
 
     # ------------------------------------------------------------------
