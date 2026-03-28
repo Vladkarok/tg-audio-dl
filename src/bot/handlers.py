@@ -268,6 +268,8 @@ async def _process_url(
             return
 
     # --- Download ---------------------------------------------------------
+    chat_id = update.message.chat_id  # captured once; update.message is non-None here
+
     try:
         await progress.set_step(Step.DOWNLOADING, StepStatus.ACTIVE)
 
@@ -288,7 +290,7 @@ async def _process_url(
             await progress.set_step(Step.UPLOADING, StepStatus.ACTIVE)
             await _cache_and_upload_one(
                 bot=context.bot,
-                chat_id=update.message.chat_id,
+                chat_id=chat_id,
                 result=result,
                 progress=progress,
                 cache=cache,
@@ -330,7 +332,7 @@ async def _process_url(
         await progress.set_step(Step.UPLOADING, StepStatus.ACTIVE)
         await _cache_and_upload_one(
             bot=context.bot,
-            chat_id=update.message.chat_id,
+            chat_id=chat_id,
             result=result,
             progress=progress,
             cache=cache,
