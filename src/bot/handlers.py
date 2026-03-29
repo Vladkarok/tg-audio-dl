@@ -67,7 +67,7 @@ def _user_facing_error(exc: Exception) -> str:
 _user_request_times: dict[int, list[float]] = {}
 _rate_limit_lock = asyncio.Lock()
 _rate_limit_request_count: int = 0
-_RATE_LIMIT_CLEANUP_INTERVAL: int = 100
+_RATE_LIMIT_CLEANUP_INTERVAL: int = 20
 
 _WELCOME_TEXT = (
     "👋 Welcome! Send me a YouTube video or playlist URL and I will download "
@@ -250,7 +250,7 @@ async def _process_url(
             result = DownloadResult(
                 file_path=cached_path,
                 video_id=video_id,
-                title=cached_title or video_id,
+                title=cached_title or "Unknown Title",
                 artist=cached_artist,
                 duration_seconds=None,
                 thumbnail_url=None,
@@ -261,8 +261,14 @@ async def _process_url(
                 context.bot, update.message.chat_id, result, progress
             )
             if msg.audio:
-                with contextlib.suppress(Exception):
+                try:
                     await cache.store_file_id(video_id, msg.audio.file_id)
+                except Exception:
+                    logger.warning(
+                        "Failed to store file_id for %s — fast resend unavailable",
+                        video_id,
+                        exc_info=True,
+                    )
             await asyncio.sleep(2)
             await progress.delete()
             return
@@ -271,12 +277,13 @@ async def _process_url(
     chat_id = update.message.chat_id  # captured once; update.message is non-None here
 
     try:
-        await progress.set_step(Step.DOWNLOADING, StepStatus.ACTIVE)
+        is_playlist = parsed_url.url_type == URLType.PLAYLIST
+        initial_detail = "Fetching playlist…" if is_playlist else ""
+        await progress.set_step(Step.DOWNLOADING, StepStatus.ACTIVE, initial_detail)
 
         async def on_progress(dp: DownloadProgress) -> None:
             await progress.set_downloading_progress(dp.percentage)
 
-        is_playlist = parsed_url.url_type == URLType.PLAYLIST
         handled_ids: set[str] = set()
 
         async def on_track_start(idx: int, total: int, title: str) -> None:
@@ -509,11 +516,21 @@ async def _cache_and_upload_one(
     )
     msg = await _send_audio(bot, chat_id, send_result, progress)
     if msg.audio:
-        with contextlib.suppress(Exception):
+        try:
             await cache.store_file_id(result.video_id, msg.audio.file_id)
+        except Exception:
+            logger.warning(
+                "Failed to store file_id for %s — fast resend unavailable",
+                result.video_id,
+                exc_info=True,
+            )
     if result.chapters:
-        with contextlib.suppress(Exception):
+        try:
             await cache.store_chapters(result.video_id, result.chapters)
+        except Exception:
+            logger.warning(
+                "Failed to store chapters for %s", result.video_id, exc_info=True
+            )
 
 
 async def _send_audio(

@@ -38,6 +38,7 @@ class DiskCache(CacheBackend):
 
     def __init__(self, cache_dir: Path, max_size_bytes: int) -> None:
         self.cache_dir = cache_dir
+        self._cache_root = cache_dir.resolve()
         self.max_size_bytes = max_size_bytes
         self._lock = asyncio.Lock()
 
@@ -49,7 +50,10 @@ class DiskCache(CacheBackend):
         """Find an existing cached audio file for *video_id*, any extension."""
         for ext in _AUDIO_EXTENSIONS:
             candidate = self.cache_dir / f"{video_id}{ext}"
-            if candidate.exists():
+            # Guard against symlinks that escape the cache directory.
+            if candidate.exists() and candidate.resolve().is_relative_to(
+                self._cache_root
+            ):
                 return candidate
         return None
 
@@ -100,12 +104,12 @@ class DiskCache(CacheBackend):
         old = self._locate_audio(video_id)
         stale = old if old is not None and old.suffix != file_path.suffix else None
 
-        # Try atomic rename first (same filesystem); fall back to chunked copy
+        # Try atomic replace first (same filesystem); fall back to chunked copy.
+        # os.replace() atomically overwrites the destination on both POSIX and
+        # Windows — unlike os.rename() which raises FileExistsError on Windows
+        # when the destination already exists.
         try:
-            # Same-filesystem rename is a tiny metadata update, so doing it
-            # inline keeps the fast path simple and avoids a threaded rename
-            # hang seen in some sandboxed runtimes.
-            os.rename(file_path, dest)
+            os.replace(file_path, dest)
         except OSError as exc:
             if exc.errno != errno.EXDEV:
                 raise

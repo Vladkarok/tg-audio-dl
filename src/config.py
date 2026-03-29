@@ -186,6 +186,16 @@ class Settings(BaseSettings):
         # (IAM roles, instance profiles, env vars, ~/.aws/credentials, etc.)
         return self
 
+    @model_validator(mode="after")
+    def validate_tmp_age_vs_timeout(self) -> "Settings":
+        if self.TMP_MAX_AGE_SECONDS <= self.DOWNLOAD_TIMEOUT_SECONDS:
+            raise ValueError(
+                f"TMP_MAX_AGE_SECONDS ({self.TMP_MAX_AGE_SECONDS}) must be greater "
+                f"than DOWNLOAD_TIMEOUT_SECONDS ({self.DOWNLOAD_TIMEOUT_SECONDS}) "
+                "to avoid deleting files that are still being downloaded"
+            )
+        return self
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:

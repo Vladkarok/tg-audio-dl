@@ -82,6 +82,10 @@ class ProgressManager:
         self._playlist_total: int | None = None
         self._playlist_track_title: str | None = None
         self._animation_tasks: dict[Step, asyncio.Task[None]] = {}
+        # Task that flushes a pending edit after the debounce window expires.
+        # Ensures the last state update is always sent even if it arrives while
+        # the debounce window is active.
+        self._deferred_flush_task: asyncio.Task[None] | None = None
 
         # Initialise step state: RECEIVED=DONE, rest=PENDING
         self._steps: dict[Step, tuple[StepStatus, str]] = {
@@ -181,7 +185,16 @@ class ProgressManager:
         await self._maybe_edit()
 
     async def edit_text(self, text: str) -> None:
-        """Replace the progress message content with arbitrary *text*."""
+        """Replace the progress message content with arbitrary *text*.
+
+        Cancels any pending deferred flush so it cannot overwrite this
+        explicit text (e.g. an error message set via _edit_error).
+        """
+        if self._deferred_flush_task is not None:
+            self._deferred_flush_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._deferred_flush_task
+            self._deferred_flush_task = None
         if self._message_id is not None:
             await self._bot.edit_message_text(
                 chat_id=self._chat_id,
@@ -191,6 +204,13 @@ class ProgressManager:
 
     async def delete(self) -> None:
         """Stop all animations and delete the status message."""
+        # Cancel any pending deferred flush — no point flushing a message
+        # that is about to be deleted.
+        if self._deferred_flush_task is not None:
+            self._deferred_flush_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._deferred_flush_task
+            self._deferred_flush_task = None
         for step in list(self._animation_tasks):
             await self._stop_animation(step)
         if self._message_id is not None:
@@ -231,14 +251,42 @@ class ProgressManager:
     # ------------------------------------------------------------------
 
     async def _maybe_edit(self) -> None:
-        """Edit the message unless we are within the debounce window."""
+        """Edit the message unless we are within the debounce window.
+
+        If the window is active, schedule a deferred flush so that the
+        latest state is always sent — even when no further update arrives.
+        """
         if self._message_id is None:
             return
 
         now = time.monotonic()
-        if now - self._last_edit_time < _DEBOUNCE_SECONDS:
+        elapsed = now - self._last_edit_time
+        if elapsed < _DEBOUNCE_SECONDS:
+            # Schedule a deferred flush only if one is not already pending.
+            # Sleep only for the remaining time so the flush happens at the
+            # end of the current window, not a full debounce period later.
+            remaining = _DEBOUNCE_SECONDS - elapsed
+            if self._deferred_flush_task is None or self._deferred_flush_task.done():
+                self._deferred_flush_task = asyncio.create_task(
+                    self._deferred_flush(remaining)
+                )
             return
 
+        await self._flush_edit()
+
+    async def _deferred_flush(self, delay: float) -> None:
+        """Wait *delay* seconds then flush the message."""
+        try:
+            await asyncio.sleep(delay)
+            self._deferred_flush_task = None
+            await self._flush_edit()
+        except asyncio.CancelledError:
+            pass
+
+    async def _flush_edit(self) -> None:
+        """Perform the actual edit_message_text call."""
+        if self._message_id is None:
+            return
         try:
             await self._bot.edit_message_text(
                 chat_id=self._chat_id,
@@ -250,5 +298,5 @@ class ProgressManager:
                 return
             logger.warning("Failed to edit progress message: %s", exc)
             # Non-fatal: progress update failed but download continues
-
-        self._last_edit_time = now
+            return
+        self._last_edit_time = time.monotonic()

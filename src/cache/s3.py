@@ -11,6 +11,7 @@ All S3 errors are caught and logged; operations degrade gracefully
 import asyncio
 import contextlib
 import logging
+import uuid
 from collections.abc import Callable
 from pathlib import Path
 
@@ -22,6 +23,7 @@ from src.cache.base import CacheBackend, validate_video_id
 logger = logging.getLogger(__name__)
 
 _S3_KEY_PREFIX = "audio/"
+_PROBE_KEY = f"{_S3_KEY_PREFIX}.probe-sentinel"
 
 # Audio extensions to probe when the extension is unknown, in priority order
 _AUDIO_EXTENSIONS = (".m4a", ".opus", ".webm", ".mp3", ".ogg")
@@ -81,6 +83,33 @@ class S3Cache(CacheBackend):
         return error.get("Code", ""), error.get("Message", "")
 
     # ------------------------------------------------------------------
+    # Startup validation
+    # ------------------------------------------------------------------
+
+    async def probe(self) -> None:
+        """Verify S3 credentials and object-level access. Raises on failure.
+
+        Uses head_object on a known-absent sentinel key rather than
+        head_bucket (which requires s3:ListBucket).  A 404 / NoSuchKey
+        response confirms the client can reach the bucket and has object-
+        level permissions; anything else (403 AccessDenied, network error,
+        etc.) is re-raised so startup fails fast instead of silently
+        degrading at runtime.  Works with least-privilege IAM policies that
+        only grant GetObject/PutObject/DeleteObject/HeadObject.
+        """
+
+        def _check() -> None:
+            try:
+                self._client.head_object(Bucket=self._bucket, Key=_PROBE_KEY)
+            except ClientError as exc:
+                code = exc.response.get("Error", {}).get("Code", "")
+                if code in ("404", "NoSuchKey"):
+                    return  # bucket reachable; key simply doesn't exist
+                raise  # 403 AccessDenied or unexpected error
+
+        await _run_blocking(_check)
+
+    # ------------------------------------------------------------------
     # CacheBackend interface
     # ------------------------------------------------------------------
 
@@ -92,9 +121,12 @@ class S3Cache(CacheBackend):
             key = self._find_s3_key(video_id)
             if key is None:
                 return None
-            # Derive local extension from the discovered S3 key
+            # Derive local extension from the discovered S3 key.
+            # Use a unique temp name to prevent concurrent get() calls for
+            # the same video_id from overwriting each other's partial download.
             suffix = Path(key).suffix
-            local_path = self._local_tmp_dir / f"{video_id}{suffix}"
+            tmp_name = f"{video_id}_{uuid.uuid4().hex[:8]}{suffix}"
+            local_path = self._local_tmp_dir / tmp_name
             self._client.download_file(self._bucket, key, str(local_path))
             return local_path
 

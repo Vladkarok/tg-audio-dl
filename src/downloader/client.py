@@ -136,6 +136,9 @@ class AudioDownloader:
         # Per-media lock + refcount to prevent concurrent downloads of the
         # same ID.  The refcount tracks how many callers are using (or waiting
         # on) a given lock so we only clean up once the last one leaves.
+        # No guard lock needed — all dict mutations are synchronous (no await
+        # between check and write), so asyncio's cooperative model keeps them
+        # race-free without an additional lock.
         self._inflight: dict[str, tuple[asyncio.Lock, int]] = {}
 
     # ------------------------------------------------------------------
@@ -158,7 +161,8 @@ class AudioDownloader:
         Raises DownloadError (or subclass) on failure.
         """
         media_key = parsed_url.video_id or parsed_url.canonical_url
-        # Register interest (bump refcount) before acquiring the lock
+        # Register interest (bump refcount) before acquiring the per-media
+        # lock.  Dict mutations are synchronous so no guard lock is needed.
         if media_key in self._inflight:
             lock, count = self._inflight[media_key]
             self._inflight[media_key] = (lock, count + 1)
@@ -176,10 +180,8 @@ class AudioDownloader:
                     track_ready_callback,
                 )
         finally:
-            # Decrement refcount; remove entry only when no one else
-            # is using or waiting on this lock.  Wrapping the lock
-            # acquisition ensures cancellation during the wait still
-            # decrements the counter.
+            # Decrement refcount; remove entry only when no one else is using
+            # or waiting on this lock.
             entry = self._inflight.get(media_key)
             if entry is not None:
                 _, count = entry
@@ -454,7 +456,12 @@ class AudioDownloader:
 
         # File on disk always uses yt-dlp's own ID
         file_path = self._find_audio_file(ydl_id)
-        file_size = file_path.stat().st_size
+        try:
+            file_size = file_path.stat().st_size
+        except FileNotFoundError as exc:
+            raise DownloadError(
+                f"Downloaded file disappeared before processing for id={ydl_id!r}"
+            ) from exc
 
         if file_size > self._max_file_size_bytes:
             raise FileTooLargeError(file_size, self._max_file_size_bytes)
@@ -483,6 +490,7 @@ class AudioDownloader:
                     for ch in raw_chapters
                     if isinstance(ch.get("start_time"), (int, float))
                     and isinstance(ch.get("title"), str)
+                    and ch["title"].strip()  # Skip blank chapter titles
                 )
                 or None
             )

@@ -11,7 +11,7 @@ from telegram.ext import (
 
 from src.bot.filters import MediaURLFilter
 from src.bot.handlers import handle_help, handle_start, handle_url
-from src.cache import create_cache
+from src.cache import CompositeCache, create_cache
 from src.cache.disk import cleanup_stale_tmp
 from src.config import Settings, get_settings
 from src.downloader.client import AudioDownloader
@@ -37,7 +37,22 @@ async def post_init(application: Application[Any, Any, Any, Any, Any, Any]) -> N
     settings.CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
     # Wire dependencies
-    application.bot_data["cache"] = create_cache(settings)
+    cache = create_cache(settings)
+    application.bot_data["cache"] = cache
+
+    # Validate S3 credentials at startup — fail fast rather than silently
+    # degrading on the first cache operation hours later.
+    if settings.S3_ENABLED and isinstance(cache, CompositeCache):
+        _log = logging.getLogger(__name__)
+        try:
+            await cache.s3.probe()
+            _log.info("S3 bucket access verified: %s", settings.S3_BUCKET)
+        except Exception as exc:
+            _log.error(
+                "S3 access check failed — verify credentials and bucket name: %s", exc
+            )
+            raise
+
     application.bot_data["downloader"] = AudioDownloader(
         download_dir=settings.CACHE_DIR / "tmp",
         max_file_size_bytes=settings.MAX_FILE_SIZE_MB * 1024 * 1024,
@@ -47,10 +62,10 @@ async def post_init(application: Application[Any, Any, Any, Any, Any, Any]) -> N
     )
     (settings.CACHE_DIR / "tmp").mkdir(parents=True, exist_ok=True)
 
-    # Schedule periodic cleanup of stale tmp files (download tmp + s3_tmp)
-    tmp_dirs = [settings.CACHE_DIR / "tmp"]
-    if settings.S3_ENABLED:
-        tmp_dirs.append(settings.CACHE_DIR / "s3_tmp")
+    # Schedule periodic cleanup of stale tmp files.
+    # Always include s3_tmp so leftovers are removed even if S3 is later
+    # disabled — cleanup_stale_tmp is a no-op when the directory is absent.
+    tmp_dirs = [settings.CACHE_DIR / "tmp", settings.CACHE_DIR / "s3_tmp"]
     max_age = settings.TMP_MAX_AGE_SECONDS
     interval = settings.TMP_CLEANUP_INTERVAL_SECONDS
 
