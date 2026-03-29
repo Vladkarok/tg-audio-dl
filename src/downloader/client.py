@@ -136,10 +136,10 @@ class AudioDownloader:
         # Per-media lock + refcount to prevent concurrent downloads of the
         # same ID.  The refcount tracks how many callers are using (or waiting
         # on) a given lock so we only clean up once the last one leaves.
+        # No guard lock needed — all dict mutations are synchronous (no await
+        # between check and write), so asyncio's cooperative model keeps them
+        # race-free without an additional lock.
         self._inflight: dict[str, tuple[asyncio.Lock, int]] = {}
-        # Protects all reads and writes to _inflight to make refcount
-        # increments and decrements atomic.
-        self._inflight_lock = asyncio.Lock()
 
     # ------------------------------------------------------------------
     # Public API
@@ -161,16 +161,14 @@ class AudioDownloader:
         Raises DownloadError (or subclass) on failure.
         """
         media_key = parsed_url.video_id or parsed_url.canonical_url
-        # Register interest (bump refcount) atomically before acquiring the
-        # per-media lock.  _inflight_lock is held only for the brief dict
-        # operations; it is NOT held during the actual download.
-        async with self._inflight_lock:
-            if media_key in self._inflight:
-                lock, count = self._inflight[media_key]
-                self._inflight[media_key] = (lock, count + 1)
-            else:
-                lock = asyncio.Lock()
-                self._inflight[media_key] = (lock, 1)
+        # Register interest (bump refcount) before acquiring the per-media
+        # lock.  Dict mutations are synchronous so no guard lock is needed.
+        if media_key in self._inflight:
+            lock, count = self._inflight[media_key]
+            self._inflight[media_key] = (lock, count + 1)
+        else:
+            lock = asyncio.Lock()
+            self._inflight[media_key] = (lock, 1)
 
         try:
             async with lock, self._semaphore:
@@ -182,18 +180,15 @@ class AudioDownloader:
                     track_ready_callback,
                 )
         finally:
-            # Decrement refcount atomically; remove entry only when no one
-            # else is using or waiting on this lock.  Wrapping the lock
-            # acquisition ensures cancellation during the wait still
-            # decrements the counter.
-            async with self._inflight_lock:
-                entry = self._inflight.get(media_key)
-                if entry is not None:
-                    _, count = entry
-                    if count <= 1:
-                        self._inflight.pop(media_key, None)
-                    else:
-                        self._inflight[media_key] = (lock, count - 1)
+            # Decrement refcount; remove entry only when no one else is using
+            # or waiting on this lock.
+            entry = self._inflight.get(media_key)
+            if entry is not None:
+                _, count = entry
+                if count <= 1:
+                    self._inflight.pop(media_key, None)
+                else:
+                    self._inflight[media_key] = (lock, count - 1)
 
     async def _download_inner(
         self,

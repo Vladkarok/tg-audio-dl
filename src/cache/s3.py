@@ -23,6 +23,7 @@ from src.cache.base import CacheBackend, validate_video_id
 logger = logging.getLogger(__name__)
 
 _S3_KEY_PREFIX = "audio/"
+_PROBE_KEY = f"{_S3_KEY_PREFIX}.probe-sentinel"
 
 # Audio extensions to probe when the extension is unknown, in priority order
 _AUDIO_EXTENSIONS = (".m4a", ".opus", ".webm", ".mp3", ".ogg")
@@ -96,8 +97,6 @@ class S3Cache(CacheBackend):
         degrading at runtime.  Works with least-privilege IAM policies that
         only grant GetObject/PutObject/DeleteObject/HeadObject.
         """
-        _PROBE_KEY = f"{_S3_KEY_PREFIX}.probe-sentinel"
-
         def _check() -> None:
             try:
                 self._client.head_object(Bucket=self._bucket, Key=_PROBE_KEY)

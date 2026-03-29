@@ -38,6 +38,7 @@ class DiskCache(CacheBackend):
 
     def __init__(self, cache_dir: Path, max_size_bytes: int) -> None:
         self.cache_dir = cache_dir
+        self._cache_root = cache_dir.resolve()
         self.max_size_bytes = max_size_bytes
         self._lock = asyncio.Lock()
 
@@ -47,11 +48,12 @@ class DiskCache(CacheBackend):
 
     def _locate_audio(self, video_id: str) -> Path | None:
         """Find an existing cached audio file for *video_id*, any extension."""
-        cache_root = self.cache_dir.resolve()
         for ext in _AUDIO_EXTENSIONS:
             candidate = self.cache_dir / f"{video_id}{ext}"
             # Guard against symlinks that escape the cache directory.
-            if candidate.exists() and candidate.resolve().is_relative_to(cache_root):
+            if candidate.exists() and candidate.resolve().is_relative_to(
+                self._cache_root
+            ):
                 return candidate
         return None
 
