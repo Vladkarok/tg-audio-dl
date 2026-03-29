@@ -86,16 +86,28 @@ class S3Cache(CacheBackend):
     # ------------------------------------------------------------------
 
     async def probe(self) -> None:
-        """Verify S3 credentials and bucket access. Raises on failure.
+        """Verify S3 credentials and object-level access. Raises on failure.
 
-        Call once at startup (post_init) to fail fast on misconfiguration
-        rather than silently degrading on the first cache operation.
+        Uses head_object on a known-absent sentinel key rather than
+        head_bucket (which requires s3:ListBucket).  A 404 / NoSuchKey
+        response confirms the client can reach the bucket and has object-
+        level permissions; anything else (403 AccessDenied, network error,
+        etc.) is re-raised so startup fails fast instead of silently
+        degrading at runtime.  Works with least-privilege IAM policies that
+        only grant GetObject/PutObject/DeleteObject/HeadObject.
         """
+        _PROBE_KEY = f"{_S3_KEY_PREFIX}.probe-sentinel"
 
-        def _head() -> None:
-            self._client.head_bucket(Bucket=self._bucket)
+        def _check() -> None:
+            try:
+                self._client.head_object(Bucket=self._bucket, Key=_PROBE_KEY)
+            except ClientError as exc:
+                code = exc.response.get("Error", {}).get("Code", "")
+                if code in ("404", "NoSuchKey"):
+                    return  # bucket reachable; key simply doesn't exist
+                raise  # 403 AccessDenied or unexpected error
 
-        await _run_blocking(_head)
+        await _run_blocking(_check)
 
     # ------------------------------------------------------------------
     # CacheBackend interface

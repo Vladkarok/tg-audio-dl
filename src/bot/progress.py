@@ -185,7 +185,16 @@ class ProgressManager:
         await self._maybe_edit()
 
     async def edit_text(self, text: str) -> None:
-        """Replace the progress message content with arbitrary *text*."""
+        """Replace the progress message content with arbitrary *text*.
+
+        Cancels any pending deferred flush so it cannot overwrite this
+        explicit text (e.g. an error message set via _edit_error).
+        """
+        if self._deferred_flush_task is not None:
+            self._deferred_flush_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._deferred_flush_task
+            self._deferred_flush_task = None
         if self._message_id is not None:
             await self._bot.edit_message_text(
                 chat_id=self._chat_id,

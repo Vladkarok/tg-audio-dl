@@ -42,7 +42,8 @@ class CompositeCache(CacheBackend):
         # downloads writing to the same cache slot simultaneously.
         if video_id not in self._backfill_locks:
             self._backfill_locks[video_id] = asyncio.Lock()
-        async with self._backfill_locks[video_id]:
+        lock = self._backfill_locks[video_id]
+        async with lock:
             # Re-check disk: another coroutine may have backfilled while we
             # were waiting for the lock.
             path = await self.disk.get(video_id)
@@ -59,6 +60,13 @@ class CompositeCache(CacheBackend):
                         video_id,
                         exc,
                     )
+
+        # Evict the lock entry when no other coroutine is waiting for it.
+        # asyncio.Lock.release() immediately marks the lock as acquired by
+        # the next waiter (if any), so locked() is True iff there is one.
+        if self._backfill_locks.get(video_id) is lock and not lock.locked():
+            self._backfill_locks.pop(video_id, None)
+
         return path
 
     async def put(self, video_id: str, file_path: Path) -> Path:
