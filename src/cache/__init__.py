@@ -27,10 +27,14 @@ class CompositeCache(CacheBackend):
     def __init__(self, disk: DiskCache, s3: S3Cache) -> None:
         self.disk = disk
         self.s3 = s3
-        # Per-video_id locks to serialise concurrent S3 → disk backfills.
-        # Two simultaneous get() misses for the same ID would otherwise both
-        # download from S3 and write over each other's sidecar files.
-        self._backfill_locks: dict[str, asyncio.Lock] = {}
+        # Per-video_id locks with reference counts to serialise concurrent
+        # S3 → disk backfills.  The refcount tracks callers currently using
+        # or waiting on a lock so entries are evicted only when the last
+        # caller leaves — the same pattern used by AudioDownloader._inflight.
+        # All dict mutations happen synchronously (no await between check and
+        # write), so asyncio's single-threaded cooperative model keeps them
+        # race-free without an additional guard lock.
+        self._backfill_locks: dict[str, tuple[asyncio.Lock, int]] = {}
 
     async def get(self, video_id: str) -> Path | None:
         # L1: disk
@@ -38,34 +42,44 @@ class CompositeCache(CacheBackend):
         if path is not None:
             return path
 
-        # L2: S3 — serialise backfill per video_id to avoid concurrent
-        # downloads writing to the same cache slot simultaneously.
-        if video_id not in self._backfill_locks:
-            self._backfill_locks[video_id] = asyncio.Lock()
-        lock = self._backfill_locks[video_id]
-        async with lock:
-            # Re-check disk: another coroutine may have backfilled while we
-            # were waiting for the lock.
-            path = await self.disk.get(video_id)
-            if path is not None:
-                return path
+        # L2: S3 — serialise backfill per video_id.
+        # Register interest (bump refcount) before acquiring the lock so that
+        # the entry cannot be evicted by a concurrent caller between our
+        # lookup and our async with.
+        if video_id in self._backfill_locks:
+            lock, count = self._backfill_locks[video_id]
+            self._backfill_locks[video_id] = (lock, count + 1)
+        else:
+            lock = asyncio.Lock()
+            self._backfill_locks[video_id] = (lock, 1)
 
-            path = await self.s3.get(video_id)
-            if path is not None:
-                try:
-                    path = await self.disk.put(video_id, path)
-                except Exception as exc:
-                    logger.warning(
-                        "CompositeCache: disk backfill failed for %s: %s",
-                        video_id,
-                        exc,
-                    )
+        try:
+            async with lock:
+                # Re-check disk: another coroutine may have backfilled while
+                # we were waiting for the lock.
+                path = await self.disk.get(video_id)
+                if path is not None:
+                    return path
 
-        # Evict the lock entry when no other coroutine is waiting for it.
-        # asyncio.Lock.release() immediately marks the lock as acquired by
-        # the next waiter (if any), so locked() is True iff there is one.
-        if self._backfill_locks.get(video_id) is lock and not lock.locked():
-            self._backfill_locks.pop(video_id, None)
+                path = await self.s3.get(video_id)
+                if path is not None:
+                    try:
+                        path = await self.disk.put(video_id, path)
+                    except Exception as exc:
+                        logger.warning(
+                            "CompositeCache: disk backfill failed for %s: %s",
+                            video_id,
+                            exc,
+                        )
+        finally:
+            # Decrement refcount; evict only when no other caller remains.
+            entry = self._backfill_locks.get(video_id)
+            if entry is not None and entry[0] is lock:
+                _, count = entry
+                if count <= 1:
+                    self._backfill_locks.pop(video_id, None)
+                else:
+                    self._backfill_locks[video_id] = (lock, count - 1)
 
         return path
 
