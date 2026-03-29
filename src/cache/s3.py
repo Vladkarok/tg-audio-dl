@@ -97,6 +97,7 @@ class S3Cache(CacheBackend):
         degrading at runtime.  Works with least-privilege IAM policies that
         only grant GetObject/PutObject/DeleteObject/HeadObject.
         """
+
         def _check() -> None:
             try:
                 self._client.head_object(Bucket=self._bucket, Key=_PROBE_KEY)
