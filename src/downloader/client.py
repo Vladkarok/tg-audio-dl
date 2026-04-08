@@ -490,8 +490,8 @@ class AudioDownloader:
                     for ch in raw_chapters
                     if isinstance(ch.get("start_time"), (int, float))
                     and isinstance(ch.get("title"), str)
-                    and ch["title"].strip()  # Skip blank chapter titles
-                    and not ch["title"].strip().startswith("<Untitled Chapter")  # Skip yt-dlp placeholders
+                    and ch["title"].strip()  # Skip blank titles
+                    and not ch["title"].strip().startswith("<Untitled Chapter")  # Skip placeholders
                 )
                 or None
             )
