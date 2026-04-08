@@ -1084,7 +1084,11 @@ class TestChapterExtraction:
             "chapters": [
                 {"start_time": 0.0, "end_time": 15.0, "title": "<Untitled Chapter 1>"},
                 {"start_time": 15.0, "end_time": 369.0, "title": "Rank 1 - Awakening"},
-                {"start_time": 369.0, "end_time": 635.0, "title": "Oceanlab - Sky Falls Down"},
+                {
+                    "start_time": 369.0,
+                    "end_time": 635.0,
+                    "title": "Oceanlab - Sky Falls Down",
+                },
             ],
         }
         _create_fake_m4a(tmp_path, VIDEO_ID)
@@ -1094,7 +1098,10 @@ class TestChapterExtraction:
         with patch("src.downloader.client.yt_dlp.YoutubeDL", return_value=ydl_mock):
             results = await downloader.download(_make_parsed_single())
 
-        assert results[0].chapters == ((15, "Rank 1 - Awakening"), (369, "Oceanlab - Sky Falls Down"))
+        assert results[0].chapters == (
+            (15, "Rank 1 - Awakening"),
+            (369, "Oceanlab - Sky Falls Down"),
+        )
 
 
 # ---------------------------------------------------------------------------
