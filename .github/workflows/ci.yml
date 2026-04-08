@@ -6,6 +6,12 @@ on:
     tags: ["v*"]
   pull_request:
     branches: [main, master]
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "Image tag to deploy (e.g. v1.2.3 or latest)"
+        required: false
+        default: "latest"
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -53,19 +59,22 @@ jobs:
       - name: Type check
         run: uv run mypy src/
 
-  deploy:
-    name: Deploy to VPS
+  build:
+    name: Build and push image
     runs-on: ubuntu-latest
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     needs: [test, lint]
     permissions:
       contents: read
       packages: write  # push to GHCR
+    outputs:
+      image_tag: ${{ steps.vars.outputs.image_tag }}
 
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Set image vars
+        id: vars
         run: |
           OWNER="${GITHUB_REPOSITORY_OWNER,,}"
           TAG="${GITHUB_REF_NAME}"
@@ -73,6 +82,7 @@ jobs:
           echo "REPO_OWNER_LC=${OWNER}" >> $GITHUB_ENV
           echo "IMAGE_TAG=${BASE}:${TAG}" >> $GITHUB_ENV
           echo "IMAGE_LATEST=${BASE}:latest" >> $GITHUB_ENV
+          echo "image_tag=${BASE}:${TAG}" >> $GITHUB_OUTPUT
 
       - name: Login to GitHub Container Registry
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
@@ -95,6 +105,34 @@ jobs:
           platforms: linux/amd64
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  deploy:
+    name: Deploy to VPS
+    runs-on: ubuntu-latest
+    # always() prevents GitHub from skipping deploy when build was skipped (workflow_dispatch path)
+    if: |
+      always() && (
+        (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && needs.build.result == 'success') ||
+        github.event_name == 'workflow_dispatch'
+      )
+    needs: [build]
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Set image vars
+        run: |
+          OWNER="${GITHUB_REPOSITORY_OWNER,,}"
+          BASE="ghcr.io/${OWNER}/youtube-download-bot"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            IMAGE_TAG="${BASE}:${{ github.event.inputs.image_tag }}"
+          else
+            IMAGE_TAG="${{ needs.build.outputs.image_tag }}"
+          fi
+          echo "REPO_OWNER_LC=${OWNER}" >> $GITHUB_ENV
+          echo "IMAGE_TAG=${IMAGE_TAG}" >> $GITHUB_ENV
 
       - name: Copy compose file and scripts to server
         uses: appleboy/scp-action@917f8b81dfc1ccd331fef9e2d61bdc6c8be94634 # v0.1.7

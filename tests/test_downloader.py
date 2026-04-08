@@ -1077,6 +1077,25 @@ class TestChapterExtraction:
 
         assert results[0].chapters is None
 
+    async def test_chapters_skip_untitled_placeholders(self, tmp_path: Path) -> None:
+        """yt-dlp <Untitled Chapter N> placeholders are filtered out."""
+        info = {
+            **FAKE_SINGLE_INFO,
+            "chapters": [
+                {"start_time": 0.0, "end_time": 15.0, "title": "<Untitled Chapter 1>"},
+                {"start_time": 15.0, "end_time": 369.0, "title": "Rank 1 - Awakening"},
+                {"start_time": 369.0, "end_time": 635.0, "title": "Oceanlab - Sky Falls Down"},
+            ],
+        }
+        _create_fake_m4a(tmp_path, VIDEO_ID)
+        downloader = AudioDownloader(tmp_path, max_file_size_bytes=10**9)
+        ydl_mock = _make_ydl_mock(info)
+
+        with patch("src.downloader.client.yt_dlp.YoutubeDL", return_value=ydl_mock):
+            results = await downloader.download(_make_parsed_single())
+
+        assert results[0].chapters == ((15, "Rank 1 - Awakening"), (369, "Oceanlab - Sky Falls Down"))
+
 
 # ---------------------------------------------------------------------------
 # test_download_timeout
