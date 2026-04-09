@@ -187,6 +187,68 @@ class TestHandleUrlFileIdCaching:
         )
         assert audio_arg == "AgACAgIA_cached_file_id"
 
+    async def test_cache_hit_with_file_id_sends_chapter_index_when_overflow(
+        self, tmp_path
+    ):
+        """File_id resend path: send_message called when chapters overflow caption."""
+        long_name = "A" * 80
+        # 15 chapters × ~90 chars ≈ 1363 > 1024 → Tier 2, chapter index reply expected
+        overflowing_chapters = tuple((i * 60, long_name) for i in range(15))
+
+        update = make_update()
+        cache = MagicMock()
+        cache.exists = AsyncMock(return_value=True)
+        cache.get_file_id = AsyncMock(return_value="AgACAgIA_cached_file_id")
+        cache.get = AsyncMock(return_value=tmp_path / "dQw4w9WgXcQ.m4a")
+        cache.store_file_id = AsyncMock()
+        cache.get_chapters = AsyncMock(return_value=overflowing_chapters)
+        cache.store_chapters = AsyncMock()
+
+        audio_msg = MagicMock()
+        audio_msg.message_id = 55
+        audio_msg.audio = MagicMock(file_id="AgACAgIA_cached_file_id")
+
+        context = make_context(cache=cache)
+        context.bot.send_audio = AsyncMock(return_value=audio_msg)
+
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            await handle_url(update, context)
+
+        context.bot.send_message.assert_called()
+        call_kwargs = context.bot.send_message.call_args
+        assert call_kwargs.kwargs.get("reply_to_message_id") == 55
+
+    async def test_cache_hit_with_file_id_no_chapter_index_when_fits(self, tmp_path):
+        """File_id resend path: send_message NOT called when chapters fit in caption."""
+        update = make_update()
+        cache = MagicMock()
+        cache.exists = AsyncMock(return_value=True)
+        cache.get_file_id = AsyncMock(return_value="AgACAgIA_cached_file_id")
+        cache.get = AsyncMock(return_value=tmp_path / "dQw4w9WgXcQ.m4a")
+        cache.store_file_id = AsyncMock()
+        # Short chapters — fit in Tier 1
+        cache.get_chapters = AsyncMock(return_value=((0, "Intro"), (60, "Chorus")))
+        cache.store_chapters = AsyncMock()
+
+        audio_msg = MagicMock()
+        audio_msg.message_id = 56
+        audio_msg.audio = MagicMock(file_id="AgACAgIA_cached_file_id")
+
+        context = make_context(cache=cache)
+        context.bot.send_audio = AsyncMock(return_value=audio_msg)
+
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            await handle_url(update, context)
+
+        # send_message may be called by the progress manager, but must NOT be
+        # called as a chapter index reply (reply_to_message_id == audio message_id)
+        chapter_index_calls = [
+            c
+            for c in context.bot.send_message.call_args_list
+            if c.kwargs.get("reply_to_message_id") == 56
+        ]
+        assert chapter_index_calls == []
+
     async def test_cache_hit_no_file_id_stores_after_upload(self, tmp_path):
         """Cache hit without file_id: file_id stored after successful upload."""
         cached_file = tmp_path / "dQw4w9WgXcQ.m4a"
@@ -607,10 +669,11 @@ class TestBuildCaptionResult:
         chapters = tuple((i * 60, "Ch") for i in range(70))
         r = _build_caption_result(long_title, chapters)
         assert len(r.caption) <= 1024
-        # Caption should not start with the long title emoji line
-        # (it's dropped from caption in Tier 3)
+        # Caption must NOT contain the title (it was dropped to make room)
+        assert long_title not in r.caption
+        assert not r.caption.startswith("🎵")
+        # Index must contain the title and chapter names
         assert r.index_messages
-        # Title must appear somewhere in the index
         assert long_title in "\n".join(r.index_messages)
 
     def test_tier4_extreme_title_only_caption(self):
