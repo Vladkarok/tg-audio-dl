@@ -9,8 +9,9 @@ import pytest
 import src.bot.handlers as handlers_module
 from src.bot.handlers import (
     _RATE_LIMIT_CLEANUP_INTERVAL,
-    _build_caption,
+    _build_caption_result,
     _format_timestamp,
+    _normalize_chapters,
     _user_request_times,
     handle_help,
     handle_start,
@@ -540,42 +541,210 @@ class TestFormatTimestamp:
         assert _format_timestamp(86399) == "23:59:59"
 
 
-class TestBuildCaption:
+class TestNormalizeChapters:
+    def test_strips_whitespace(self):
+        chapters = ((0, "  Intro  "), (60, "Verse\n2"))
+        result = _normalize_chapters(chapters)
+        assert result == ((0, "Intro"), (60, "Verse 2"))
+
+    def test_drops_empty_names(self):
+        chapters = ((0, ""), (60, "   "), (120, "Chorus"))
+        result = _normalize_chapters(chapters)
+        assert result == ((120, "Chorus"),)
+
+    def test_deduplicates_start_times(self):
+        chapters = ((0, "First"), (0, "Duplicate"), (60, "Second"))
+        result = _normalize_chapters(chapters)
+        assert result == ((0, "First"), (60, "Second"))
+
+    def test_empty_input(self):
+        assert _normalize_chapters(()) == ()
+
+
+class TestBuildCaptionResult:
     def test_no_chapters(self):
-        result = _build_caption("My Song", None)
-        assert result == "🎵 My Song"
+        r = _build_caption_result("My Song", None)
+        assert r.caption == "🎵 My Song"
+        assert r.index_messages == ()
 
     def test_empty_chapters(self):
-        result = _build_caption("My Song", ())
-        assert result == "🎵 My Song"
+        r = _build_caption_result("My Song", ())
+        assert r.caption == "🎵 My Song"
+        assert r.index_messages == ()
 
-    def test_with_chapters(self):
+    def test_tier1_chapters_fit(self):
+        """Short chapter list: full caption, no follow-up."""
         chapters = ((0, "Intro"), (60, "Verse"), (180, "Chorus"))
-        result = _build_caption("My Song", chapters)
-        assert result == (
-            "🎵 My Song\n\n00:00:00 Intro\n00:01:00 Verse\n00:03:00 Chorus"
+        r = _build_caption_result("My Song", chapters)
+        assert (
+            r.caption == "🎵 My Song\n\n00:00:00 Intro\n00:01:00 Verse\n00:03:00 Chorus"
+        )
+        assert r.index_messages == ()
+
+    def test_tier2_numbered_timestamps_with_title(self):
+        """Long names cause overflow; numbered timestamps + title fit."""
+        long_name = "A" * 80
+        # 15 chapters × 90 chars each ≈ 1362 chars > 1024 → Tier 2
+        # Numbered: 15 × 12 chars ≈ 192 chars → fits
+        chapters = tuple((i * 60, long_name) for i in range(15))
+        r = _build_caption_result("My Song", chapters)
+        # Caption must contain title and numbered timestamps
+        assert r.caption.startswith("🎵 My Song")
+        assert "1" in r.caption
+        assert long_name not in r.caption
+        assert len(r.caption) <= 1024
+        # Index must contain full names
+        assert r.index_messages
+        assert long_name in "\n".join(r.index_messages)
+        # Index message(s) each within 4096 chars
+        for msg in r.index_messages:
+            assert len(msg) <= 4096
+
+    def test_tier3_numbered_timestamps_without_title(self):
+        """Numbered timestamps + long title overflow; timestamps alone fit."""
+        long_title = "T" * 200
+        # n=70: full=1043>1024, tier2=1034>1024, tier3=830<=1024 → Tier 3
+        chapters = tuple((i * 60, "Ch") for i in range(70))
+        r = _build_caption_result(long_title, chapters)
+        assert len(r.caption) <= 1024
+        # Caption should not start with the long title emoji line
+        # (it's dropped from caption in Tier 3)
+        assert r.index_messages
+        # Title must appear somewhere in the index
+        assert long_title in "\n".join(r.index_messages)
+
+    def test_tier4_extreme_title_only_caption(self):
+        """Caption is title-only when even bare numbered timestamps exceed 1024."""
+        # With 200-char title, n=90: tier3=1070>1024 → Tier 4
+        chapters = tuple((i * 60, f"Chapter {i}") for i in range(90))
+        r = _build_caption_result("Podcast", chapters)
+        assert r.caption == "🎵 Podcast"
+        assert len(r.caption) <= 1024
+        assert r.index_messages
+        # All chapter names present across index messages
+        combined = "\n".join(r.index_messages)
+        assert "Chapter 0" in combined
+        assert "Chapter 89" in combined
+        # Index messages each within limit
+        for msg in r.index_messages:
+            assert len(msg) <= 4096
+        # Timestamps present in extreme mode
+        assert "00:00:00" in combined
+
+    def test_caption_never_exceeds_1024(self):
+        """Regardless of tier, caption is always ≤ 1024."""
+        for n in [1, 5, 50, 100, 200]:
+            chapters = tuple(
+                (i * 60, f"Long chapter name that is verbose {i}") for i in range(n)
+            )
+            r = _build_caption_result("Some Title", chapters)
+            assert len(r.caption) <= 1024, f"Failed at n={n}"
+
+    def test_index_messages_each_within_4096(self):
+        """Every index message chunk stays within Telegram text limit."""
+        chapters = tuple(
+            (i * 60, f"Very long chapter name number {i} with lots of text")
+            for i in range(300)
+        )
+        r = _build_caption_result("Podcast", chapters)
+        for msg in r.index_messages:
+            assert len(msg) <= 4096
+
+    def test_no_individual_timestamp_dropped(self):
+        """In Tier 4, all timestamps appear in the index messages."""
+        chapters = tuple((i * 30, f"Ch{i}") for i in range(200))
+        r = _build_caption_result("Podcast", chapters)
+        combined = "\n".join(r.index_messages)
+        # Every timestamp should be present
+        for i, (s, _) in enumerate(chapters, 1):
+            ts = _format_timestamp(s)
+            assert ts in combined, f"Timestamp {ts} for chapter {i} missing"
+
+    def test_tier1_boundary_exactly_1024(self):
+        """Caption at exactly 1024 chars is Tier 1 (no overflow)."""
+        # Build a chapter list that lands exactly at 1024
+        # Craft title to fill up to exactly 1024
+        padding = "X" * (1024 - len("🎵 \n\n00:00:00 Ch"))
+        r = _build_caption_result(padding, ((0, "Ch"),))
+        assert len(r.caption) <= 1024
+        assert r.index_messages == ()
+
+
+class TestSendAudioChapterIndex:
+    async def test_send_audio_sends_index_reply_when_overflow(self, tmp_path):
+        """When chapters overflow caption, a chapter index reply is sent."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from src.bot.handlers import _send_audio
+        from src.bot.progress import ProgressManager
+
+        audio_file = tmp_path / "test.m4a"
+        audio_file.write_bytes(b"fake")
+
+        long_name = "A" * 80
+        # 15 chapters × ~90 chars ≈ 1363 > 1024 → triggers Tier 2 overflow
+        chapters = tuple((i * 60, long_name) for i in range(15))
+        result = DownloadResult(
+            file_path=audio_file,
+            video_id="abc123",
+            title="My Podcast",
+            artist=None,
+            duration_seconds=600,
+            thumbnail_url=None,
+            file_size_bytes=4,
+            chapters=chapters,
         )
 
-    def test_truncation_at_limit(self):
-        chapters = tuple((i * 60, f"Chapter {i + 1}") for i in range(100))
-        result = _build_caption("Title", chapters, max_length=200)
-        assert len(result) <= 200
-        assert result.endswith("\n...")
+        bot = MagicMock()
+        sent_msg = MagicMock()
+        sent_msg.message_id = 42
+        bot.send_audio = AsyncMock(return_value=sent_msg)
+        bot.send_message = AsyncMock(return_value=MagicMock(message_id=43))
 
-    def test_truncation_preserves_title(self):
-        chapters = tuple((i * 60, f"Chapter {i + 1}") for i in range(100))
-        result = _build_caption("Title", chapters, max_length=200)
-        assert result.startswith("🎵 Title")
+        progress = MagicMock(spec=ProgressManager)
+        progress.set_step = AsyncMock()
+        progress.start_animation = AsyncMock()
+        progress.start_upload_animation = AsyncMock()
 
-    def test_title_only_if_fewer_than_two_chapters_fit(self):
-        """If only 0–1 chapter lines fit, show title only."""
-        chapters = ((0, "A" * 100), (60, "B" * 100))
-        result = _build_caption("Title", chapters, max_length=50)
-        assert result == "🎵 Title"
-        assert "\n" not in result
+        with patch("src.bot.handlers._extract_thumbnail", return_value=None):
+            await _send_audio(bot, chat_id=999, result=result, progress=progress)
 
-    def test_never_exceeds_max_length(self):
-        chapters = tuple((i * 60, f"Long chapter name {i}") for i in range(50))
-        for limit in [100, 200, 500, 1024]:
-            result = _build_caption("A Title", chapters, max_length=limit)
-            assert len(result) <= limit
+        bot.send_message.assert_called()
+        call_kwargs = bot.send_message.call_args
+        assert call_kwargs.kwargs.get("reply_to_message_id") == 42
+
+    async def test_send_audio_no_index_reply_when_caption_fits(self, tmp_path):
+        """When chapters fit in caption, no send_message is called."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from src.bot.handlers import _send_audio
+        from src.bot.progress import ProgressManager
+
+        audio_file = tmp_path / "test.m4a"
+        audio_file.write_bytes(b"fake")
+
+        chapters = ((0, "Intro"), (60, "Chorus"))
+        result = DownloadResult(
+            file_path=audio_file,
+            video_id="abc123",
+            title="Short Song",
+            artist=None,
+            duration_seconds=120,
+            thumbnail_url=None,
+            file_size_bytes=4,
+            chapters=chapters,
+        )
+
+        bot = MagicMock()
+        bot.send_audio = AsyncMock(return_value=MagicMock(message_id=10))
+        bot.send_message = AsyncMock()
+
+        progress = MagicMock(spec=ProgressManager)
+        progress.set_step = AsyncMock()
+        progress.start_animation = AsyncMock()
+        progress.start_upload_animation = AsyncMock()
+
+        with patch("src.bot.handlers._extract_thumbnail", return_value=None):
+            await _send_audio(bot, chat_id=999, result=result, progress=progress)
+
+        bot.send_message.assert_not_called()
