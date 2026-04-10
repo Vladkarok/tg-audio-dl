@@ -454,7 +454,7 @@ def _build_index_messages(
 
     for line in lines:
         needed = 1 + len(line)  # leading \n
-        if current_len + needed > max_length and len(current) > 1:
+        if current_len + needed > max_length and current:
             messages.append("\n".join(current))
             current = [line]
             current_len = len(line)
@@ -602,11 +602,10 @@ async def _send_chapter_index(
             )
         except Exception:
             logger.warning(
-                "Failed to send chapter index to chat %d — dropping remaining parts",
+                "Failed to send chapter index chunk to chat %d — continuing",
                 chat_id,
                 exc_info=True,
             )
-            break
 
 
 async def _cache_and_upload_one(

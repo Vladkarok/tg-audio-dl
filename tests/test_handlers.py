@@ -725,12 +725,30 @@ class TestBuildCaptionResult:
 
     def test_tier1_boundary_exactly_1024(self):
         """Caption at exactly 1024 chars is Tier 1 (no overflow)."""
-        # Build a chapter list that lands exactly at 1024
-        # Craft title to fill up to exactly 1024
-        padding = "X" * (1024 - len("🎵 \n\n00:00:00 Ch"))
+        # Craft title so full caption lands exactly at 1024
+        base = "🎵 \n\n00:00:00 Ch"
+        padding = "X" * (1024 - len(base))
         r = _build_caption_result(padding, ((0, "Ch"),))
-        assert len(r.caption) <= 1024
+        assert len(r.caption) == 1024
         assert r.index_messages == ()
+
+    def test_index_messages_stay_within_4096_with_long_header(self):
+        """Index chunks stay ≤ 4096 even when the Tier 3/4 header is long."""
+        # Tier 3: long title in header, many short chapters
+        long_title = "T" * 500
+        chapters = tuple((i * 60, "Ch") for i in range(70))
+        r = _build_caption_result(long_title, chapters)
+        for msg in r.index_messages:
+            assert len(msg) <= 4096, f"Chunk exceeds 4096: {len(msg)}"
+
+    def test_index_messages_stay_within_4096_with_long_chapter_name(self):
+        """A single long chapter name does not push a chunk past 4096."""
+        # One very long name — should get its own chunk, not bleed into header chunk
+        very_long_name = "N" * 3000
+        chapters = ((0, "Short"), (60, very_long_name), (120, "Short2"))
+        r = _build_caption_result("Podcast " + "X" * 200, chapters)
+        for msg in r.index_messages:
+            assert len(msg) <= 4096, f"Chunk exceeds 4096: {len(msg)}"
 
 
 class TestSendAudioChapterIndex:
@@ -811,3 +829,93 @@ class TestSendAudioChapterIndex:
             await _send_audio(bot, chat_id=999, result=result, progress=progress)
 
         bot.send_message.assert_not_called()
+
+    async def test_send_audio_chapter_index_failure_swallowed(self, tmp_path):
+        """send_message failure for chapter index does not propagate out of _send_audio."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from telegram.error import NetworkError
+
+        from src.bot.handlers import _send_audio
+        from src.bot.progress import ProgressManager
+
+        audio_file = tmp_path / "test.m4a"
+        audio_file.write_bytes(b"fake")
+
+        long_name = "A" * 80
+        chapters = tuple((i * 60, long_name) for i in range(15))
+        result = DownloadResult(
+            file_path=audio_file,
+            video_id="abc123",
+            title="My Podcast",
+            artist=None,
+            duration_seconds=600,
+            thumbnail_url=None,
+            file_size_bytes=4,
+            chapters=chapters,
+        )
+
+        bot = MagicMock()
+        bot.send_audio = AsyncMock(return_value=MagicMock(message_id=99))
+        bot.send_message = AsyncMock(side_effect=NetworkError("timeout"))
+
+        progress = MagicMock(spec=ProgressManager)
+        progress.set_step = AsyncMock()
+        progress.start_animation = AsyncMock()
+        progress.start_upload_animation = AsyncMock()
+
+        # Must not raise even though send_message always fails
+        with patch("src.bot.handlers._extract_thumbnail", return_value=None):
+            await _send_audio(bot, chat_id=999, result=result, progress=progress)
+
+        # send_audio still succeeded
+        bot.send_audio.assert_called_once()
+
+    async def test_send_chapter_index_continues_after_chunk_failure(self, tmp_path):
+        """Each chunk is attempted independently — one failure does not drop the rest."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from telegram.error import NetworkError
+
+        from src.bot.handlers import _send_audio
+        from src.bot.progress import ProgressManager
+
+        audio_file = tmp_path / "test.m4a"
+        audio_file.write_bytes(b"fake")
+
+        # Tier 4: 90 chapters with 100-char names → multiple index chunks (~3 at 4096 each)
+        chapters = tuple((i * 60, f"Chapter {'X' * 100} {i}") for i in range(90))
+        result = DownloadResult(
+            file_path=audio_file,
+            video_id="abc123",
+            title="Podcast",
+            artist=None,
+            duration_seconds=5400,
+            thumbnail_url=None,
+            file_size_bytes=4,
+            chapters=chapters,
+        )
+
+        call_count = 0
+
+        async def fail_first_then_succeed(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise NetworkError("timeout")
+            return MagicMock(message_id=100 + call_count)
+
+        bot = MagicMock()
+        bot.send_audio = AsyncMock(return_value=MagicMock(message_id=55))
+        bot.send_message = AsyncMock(side_effect=fail_first_then_succeed)
+
+        progress = MagicMock(spec=ProgressManager)
+        progress.set_step = AsyncMock()
+        progress.start_animation = AsyncMock()
+        progress.start_upload_animation = AsyncMock()
+
+        with patch("src.bot.handlers._extract_thumbnail", return_value=None):
+            await _send_audio(bot, chat_id=999, result=result, progress=progress)
+
+        # send_message must have been called more than once (continued after failure)
+        assert bot.send_message.call_count > 1
