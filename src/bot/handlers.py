@@ -14,6 +14,7 @@ import dataclasses
 import io
 import logging
 import time
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import mutagen
@@ -219,14 +220,21 @@ async def _process_url(
                     t, _ = _extract_audio_metadata(fid_path)
                     if t:
                         fid_title = clean_title(t) or video_id
-                fid_caption = _build_caption(fid_title, fid_chapters)
-                await context.bot.send_audio(
+                fid_caption_result = _build_caption_result(fid_title, fid_chapters)
+                fid_msg = await context.bot.send_audio(
                     chat_id=update.message.chat_id,
                     audio=file_id,
-                    caption=fid_caption,
+                    caption=fid_caption_result.caption,
                     read_timeout=300,
                     write_timeout=300,
                 )
+                if fid_caption_result.index_messages:
+                    await _send_chapter_index(
+                        context.bot,
+                        update.message.chat_id,
+                        fid_msg.message_id,
+                        fid_caption_result.index_messages,
+                    )
                 await progress.set_step(Step.UPLOADING, StepStatus.DONE)
                 await asyncio.sleep(2)
                 await progress.delete()
@@ -388,6 +396,18 @@ def _extract_audio_metadata(file_path: Path) -> tuple[str | None, str | None]:
 # Caption formatting
 # ---------------------------------------------------------------------------
 
+_CAPTION_MAX = 1024
+_MESSAGE_MAX = 4096
+
+
+@dataclass(frozen=True)
+class CaptionResult:
+    """Caption for send_audio plus optional chapter-index reply messages."""
+
+    caption: str
+    # Each element is one reply message (≤4096 chars). Empty = no follow-up needed.
+    index_messages: tuple[str, ...] = field(default_factory=tuple)
+
 
 def _format_timestamp(seconds: int) -> str:
     """Format seconds as HH:MM:SS."""
@@ -396,48 +416,117 @@ def _format_timestamp(seconds: int) -> str:
     return f"{h:02d}:{m:02d}:{s:02d}"
 
 
-def _build_caption(
+def _normalize_chapters(chapters: tuple[Chapter, ...]) -> tuple[Chapter, ...]:
+    """Strip whitespace, drop empty names, deduplicate start times (first wins)."""
+    seen: set[int] = set()
+    result: list[Chapter] = []
+    for start, name in chapters:
+        clean = " ".join(name.split())
+        if not clean or start in seen:
+            continue
+        seen.add(start)
+        result.append((start, clean))
+    return tuple(result)
+
+
+def _build_index_messages(
+    chapters: tuple[Chapter, ...],
+    header: str,
+    include_timestamps: bool = False,
+    max_length: int = _MESSAGE_MAX,
+) -> tuple[str, ...]:
+    """Pack chapter index lines into one or more messages each ≤ max_length chars.
+
+    When include_timestamps is True each line is: ``HH:MM:SS N - Name``
+    Otherwise: ``N - Name``
+    """
+    if include_timestamps:
+        lines = [
+            f"{_format_timestamp(s)} {i} - {name}"
+            for i, (s, name) in enumerate(chapters, 1)
+        ]
+    else:
+        lines = [f"{i} - {name}" for i, (_, name) in enumerate(chapters, 1)]
+
+    messages: list[str] = []
+    current: list[str] = [header]
+    current_len = len(header)
+
+    for line in lines:
+        needed = 1 + len(line)  # leading \n
+        if current_len + needed > max_length and current:
+            messages.append("\n".join(current))
+            current = [line]
+            current_len = len(line)
+        else:
+            current.append(line)
+            current_len += needed
+
+    if current:
+        messages.append("\n".join(current))
+
+    return tuple(messages)
+
+
+def _build_caption_result(
     title: str,
     chapters: tuple[Chapter, ...] | None,
-    max_length: int = 1024,
-) -> str:
-    """Build a Telegram caption with title and optional chapter timestamps.
+) -> CaptionResult:
+    """Build caption + optional chapter-index follow-up messages.
 
-    Truncates chapter list from the bottom if it exceeds *max_length*,
-    appending '...' as indicator.
+    Four-tier strategy (timestamps are NEVER individually truncated):
+
+    Tier 1  Full caption (title + full chapter names) fits in 1024 chars.
+            → Caption only, no follow-up.
+
+    Tier 2  Full names don't fit; title + numbered timestamps fit.
+            → Caption: ``🎵 Title\\n\\nHH:MM:SS 1\\n...``
+            → Follow-up: ``📋 Chapters:\\n1 - Name\\n...``
+
+    Tier 3  Title + numbered timestamps don't fit; numbered timestamps alone fit.
+            → Caption: ``HH:MM:SS 1\\n...`` (no title)
+            → Follow-up includes title header so user can still see it.
+
+    Tier 4  Even bare numbered timestamps exceed 1024 (200+ chapters).
+            → Caption: ``🎵 Title`` only (no timestamps at all).
+            → Follow-up: ``🎵 Title\\n\\n📋 All chapters:\\nHH:MM:SS 1 - Name\\n...``
+              so all navigation info is available in the reply.
     """
     title_line = f"🎵 {title}"
+
     if not chapters:
-        return title_line[:max_length]
+        return CaptionResult(caption=title_line[:_CAPTION_MAX])
 
-    chapter_lines = [f"{_format_timestamp(start)} {label}" for start, label in chapters]
+    chapters = _normalize_chapters(chapters)
+    if not chapters:
+        return CaptionResult(caption=title_line[:_CAPTION_MAX])
 
-    full = title_line + "\n\n" + "\n".join(chapter_lines)
-    if len(full) <= max_length:
-        return full
+    # --- Tier 1: full caption with chapter names ---
+    full_lines = [f"{_format_timestamp(s)} {name}" for s, name in chapters]
+    full_caption = title_line + "\n\n" + "\n".join(full_lines)
+    if len(full_caption) <= _CAPTION_MAX:
+        return CaptionResult(caption=full_caption)
 
-    # Truncate: drop chapters from the bottom, add "..." suffix
-    suffix = "\n..."
-    base = title_line + "\n\n"
-    available = max_length - len(base) - len(suffix)
+    # --- Tier 2: numbered timestamps + title ---
+    numbered_lines = [
+        f"{_format_timestamp(s)} {i}" for i, (s, _) in enumerate(chapters, 1)
+    ]
+    tier2_caption = title_line + "\n\n" + "\n".join(numbered_lines)
+    if len(tier2_caption) <= _CAPTION_MAX:
+        index = _build_index_messages(chapters, header="📋 Chapters:")
+        return CaptionResult(caption=tier2_caption, index_messages=index)
 
-    if available <= 0:
-        return title_line[:max_length]
+    # --- Tier 3: numbered timestamps only (no title) ---
+    tier3_caption = "\n".join(numbered_lines)
+    if len(tier3_caption) <= _CAPTION_MAX:
+        header = f"🎵 {title}\n\n📋 Chapters:"
+        index = _build_index_messages(chapters, header=header)
+        return CaptionResult(caption=tier3_caption, index_messages=index)
 
-    included: list[str] = []
-    used = 0
-    for line in chapter_lines:
-        needed = len(line) + (1 if included else 0)  # +1 for \n separator
-        if used + needed > available:
-            break
-        used += needed
-        included.append(line)
-
-    # Show at least 2 chapters or fall back to title only
-    if len(included) < 2:
-        return title_line[:max_length]
-
-    return base + "\n".join(included) + suffix
+    # --- Tier 4: title-only caption; all info in follow-up (with timestamps) ---
+    header = f"🎵 {title}\n\n📋 All chapters:"
+    index = _build_index_messages(chapters, header=header, include_timestamps=True)
+    return CaptionResult(caption=title_line[:_CAPTION_MAX], index_messages=index)
 
 
 _THUMB_MAX_SIZE = 320  # Telegram max thumbnail dimension (px)
@@ -497,6 +586,28 @@ def _extract_thumbnail(file_path: Path) -> InputFile | None:
     return None
 
 
+async def _send_chapter_index(
+    bot: Bot,
+    chat_id: int,
+    reply_to_message_id: int,
+    index_messages: tuple[str, ...],
+) -> None:
+    """Send chapter index as reply message(s). Failures are logged and swallowed."""
+    for text in index_messages:
+        try:
+            await bot.send_message(
+                chat_id=chat_id,
+                text=text,
+                reply_to_message_id=reply_to_message_id,
+            )
+        except Exception:
+            logger.warning(
+                "Failed to send chapter index chunk to chat %d — continuing",
+                chat_id,
+                exc_info=True,
+            )
+
+
 async def _cache_and_upload_one(
     bot: Bot,
     chat_id: int,
@@ -542,6 +653,7 @@ async def _send_audio(
     display_title = clean_title(result.title) or result.video_id
     safe_filename = sanitize_filename(display_title) or result.video_id
     thumbnail = _extract_thumbnail(result.file_path)
+    caption_result = _build_caption_result(display_title, result.chapters)
     await progress.set_step(Step.PROCESSING, StepStatus.DONE)
     await progress.start_upload_animation()
     with result.file_path.open("rb") as audio_file:
@@ -552,10 +664,14 @@ async def _send_audio(
             title=display_title,
             performer=result.artist,
             duration=result.duration_seconds,
-            caption=_build_caption(display_title, result.chapters),
+            caption=caption_result.caption,
             filename=f"{safe_filename}{result.file_path.suffix}",
             read_timeout=300,
             write_timeout=300,
+        )
+    if caption_result.index_messages:
+        await _send_chapter_index(
+            bot, chat_id, msg.message_id, caption_result.index_messages
         )
     return msg
 

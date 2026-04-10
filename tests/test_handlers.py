@@ -9,8 +9,9 @@ import pytest
 import src.bot.handlers as handlers_module
 from src.bot.handlers import (
     _RATE_LIMIT_CLEANUP_INTERVAL,
-    _build_caption,
+    _build_caption_result,
     _format_timestamp,
+    _normalize_chapters,
     _user_request_times,
     handle_help,
     handle_start,
@@ -185,6 +186,68 @@ class TestHandleUrlFileIdCaching:
             call_kwargs.args[0] if call_kwargs.args else None
         )
         assert audio_arg == "AgACAgIA_cached_file_id"
+
+    async def test_cache_hit_with_file_id_sends_chapter_index_when_overflow(
+        self, tmp_path
+    ):
+        """File_id resend path: send_message called when chapters overflow caption."""
+        long_name = "A" * 80
+        # 15 chapters × ~90 chars ≈ 1363 > 1024 → Tier 2, chapter index reply expected
+        overflowing_chapters = tuple((i * 60, long_name) for i in range(15))
+
+        update = make_update()
+        cache = MagicMock()
+        cache.exists = AsyncMock(return_value=True)
+        cache.get_file_id = AsyncMock(return_value="AgACAgIA_cached_file_id")
+        cache.get = AsyncMock(return_value=tmp_path / "dQw4w9WgXcQ.m4a")
+        cache.store_file_id = AsyncMock()
+        cache.get_chapters = AsyncMock(return_value=overflowing_chapters)
+        cache.store_chapters = AsyncMock()
+
+        audio_msg = MagicMock()
+        audio_msg.message_id = 55
+        audio_msg.audio = MagicMock(file_id="AgACAgIA_cached_file_id")
+
+        context = make_context(cache=cache)
+        context.bot.send_audio = AsyncMock(return_value=audio_msg)
+
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            await handle_url(update, context)
+
+        context.bot.send_message.assert_called()
+        call_kwargs = context.bot.send_message.call_args
+        assert call_kwargs.kwargs.get("reply_to_message_id") == 55
+
+    async def test_cache_hit_with_file_id_no_chapter_index_when_fits(self, tmp_path):
+        """File_id resend path: send_message NOT called when chapters fit in caption."""
+        update = make_update()
+        cache = MagicMock()
+        cache.exists = AsyncMock(return_value=True)
+        cache.get_file_id = AsyncMock(return_value="AgACAgIA_cached_file_id")
+        cache.get = AsyncMock(return_value=tmp_path / "dQw4w9WgXcQ.m4a")
+        cache.store_file_id = AsyncMock()
+        # Short chapters — fit in Tier 1
+        cache.get_chapters = AsyncMock(return_value=((0, "Intro"), (60, "Chorus")))
+        cache.store_chapters = AsyncMock()
+
+        audio_msg = MagicMock()
+        audio_msg.message_id = 56
+        audio_msg.audio = MagicMock(file_id="AgACAgIA_cached_file_id")
+
+        context = make_context(cache=cache)
+        context.bot.send_audio = AsyncMock(return_value=audio_msg)
+
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            await handle_url(update, context)
+
+        # send_message may be called by the progress manager, but must NOT be
+        # called as a chapter index reply (reply_to_message_id == audio message_id)
+        chapter_index_calls = [
+            c
+            for c in context.bot.send_message.call_args_list
+            if c.kwargs.get("reply_to_message_id") == 56
+        ]
+        assert chapter_index_calls == []
 
     async def test_cache_hit_no_file_id_stores_after_upload(self, tmp_path):
         """Cache hit without file_id: file_id stored after successful upload."""
@@ -540,42 +603,319 @@ class TestFormatTimestamp:
         assert _format_timestamp(86399) == "23:59:59"
 
 
-class TestBuildCaption:
+class TestNormalizeChapters:
+    def test_strips_whitespace(self):
+        chapters = ((0, "  Intro  "), (60, "Verse\n2"))
+        result = _normalize_chapters(chapters)
+        assert result == ((0, "Intro"), (60, "Verse 2"))
+
+    def test_drops_empty_names(self):
+        chapters = ((0, ""), (60, "   "), (120, "Chorus"))
+        result = _normalize_chapters(chapters)
+        assert result == ((120, "Chorus"),)
+
+    def test_deduplicates_start_times(self):
+        chapters = ((0, "First"), (0, "Duplicate"), (60, "Second"))
+        result = _normalize_chapters(chapters)
+        assert result == ((0, "First"), (60, "Second"))
+
+    def test_empty_input(self):
+        assert _normalize_chapters(()) == ()
+
+
+class TestBuildCaptionResult:
     def test_no_chapters(self):
-        result = _build_caption("My Song", None)
-        assert result == "🎵 My Song"
+        r = _build_caption_result("My Song", None)
+        assert r.caption == "🎵 My Song"
+        assert r.index_messages == ()
 
     def test_empty_chapters(self):
-        result = _build_caption("My Song", ())
-        assert result == "🎵 My Song"
+        r = _build_caption_result("My Song", ())
+        assert r.caption == "🎵 My Song"
+        assert r.index_messages == ()
 
-    def test_with_chapters(self):
+    def test_tier1_chapters_fit(self):
+        """Short chapter list: full caption, no follow-up."""
         chapters = ((0, "Intro"), (60, "Verse"), (180, "Chorus"))
-        result = _build_caption("My Song", chapters)
-        assert result == (
-            "🎵 My Song\n\n00:00:00 Intro\n00:01:00 Verse\n00:03:00 Chorus"
+        r = _build_caption_result("My Song", chapters)
+        assert (
+            r.caption == "🎵 My Song\n\n00:00:00 Intro\n00:01:00 Verse\n00:03:00 Chorus"
+        )
+        assert r.index_messages == ()
+
+    def test_tier2_numbered_timestamps_with_title(self):
+        """Long names cause overflow; numbered timestamps + title fit."""
+        long_name = "A" * 80
+        # 15 chapters × 90 chars each ≈ 1362 chars > 1024 → Tier 2
+        # Numbered: 15 × 12 chars ≈ 192 chars → fits
+        chapters = tuple((i * 60, long_name) for i in range(15))
+        r = _build_caption_result("My Song", chapters)
+        # Caption must contain title and numbered timestamps
+        assert r.caption.startswith("🎵 My Song")
+        assert "1" in r.caption
+        assert long_name not in r.caption
+        assert len(r.caption) <= 1024
+        # Index must contain full names
+        assert r.index_messages
+        assert long_name in "\n".join(r.index_messages)
+        # Index message(s) each within 4096 chars
+        for msg in r.index_messages:
+            assert len(msg) <= 4096
+
+    def test_tier3_numbered_timestamps_without_title(self):
+        """Numbered timestamps + long title overflow; timestamps alone fit."""
+        long_title = "T" * 200
+        # n=70: full=1043>1024, tier2=1034>1024, tier3=830<=1024 → Tier 3
+        chapters = tuple((i * 60, "Ch") for i in range(70))
+        r = _build_caption_result(long_title, chapters)
+        assert len(r.caption) <= 1024
+        # Caption must NOT contain the title (it was dropped to make room)
+        assert long_title not in r.caption
+        assert not r.caption.startswith("🎵")
+        # Index must contain the title and chapter names
+        assert r.index_messages
+        assert long_title in "\n".join(r.index_messages)
+
+    def test_tier4_extreme_title_only_caption(self):
+        """Caption is title-only when even bare numbered timestamps exceed 1024."""
+        # With 200-char title, n=90: tier3=1070>1024 → Tier 4
+        chapters = tuple((i * 60, f"Chapter {i}") for i in range(90))
+        r = _build_caption_result("Podcast", chapters)
+        assert r.caption == "🎵 Podcast"
+        assert len(r.caption) <= 1024
+        assert r.index_messages
+        # All chapter names present across index messages
+        combined = "\n".join(r.index_messages)
+        assert "Chapter 0" in combined
+        assert "Chapter 89" in combined
+        # Index messages each within limit
+        for msg in r.index_messages:
+            assert len(msg) <= 4096
+        # Timestamps present in extreme mode
+        assert "00:00:00" in combined
+
+    def test_caption_never_exceeds_1024(self):
+        """Regardless of tier, caption is always ≤ 1024."""
+        for n in [1, 5, 50, 100, 200]:
+            chapters = tuple(
+                (i * 60, f"Long chapter name that is verbose {i}") for i in range(n)
+            )
+            r = _build_caption_result("Some Title", chapters)
+            assert len(r.caption) <= 1024, f"Failed at n={n}"
+
+    def test_index_messages_each_within_4096(self):
+        """Every index message chunk stays within Telegram text limit."""
+        chapters = tuple(
+            (i * 60, f"Very long chapter name number {i} with lots of text")
+            for i in range(300)
+        )
+        r = _build_caption_result("Podcast", chapters)
+        for msg in r.index_messages:
+            assert len(msg) <= 4096
+
+    def test_no_individual_timestamp_dropped(self):
+        """In Tier 4, all timestamps appear in the index messages."""
+        chapters = tuple((i * 30, f"Ch{i}") for i in range(200))
+        r = _build_caption_result("Podcast", chapters)
+        combined = "\n".join(r.index_messages)
+        # Every timestamp should be present
+        for i, (s, _) in enumerate(chapters, 1):
+            ts = _format_timestamp(s)
+            assert ts in combined, f"Timestamp {ts} for chapter {i} missing"
+
+    def test_tier1_boundary_exactly_1024(self):
+        """Caption at exactly 1024 chars is Tier 1 (no overflow)."""
+        # Craft title so full caption lands exactly at 1024
+        base = "🎵 \n\n00:00:00 Ch"
+        padding = "X" * (1024 - len(base))
+        r = _build_caption_result(padding, ((0, "Ch"),))
+        assert len(r.caption) == 1024
+        assert r.index_messages == ()
+
+    def test_index_messages_stay_within_4096_with_long_header(self):
+        """Index chunks stay ≤ 4096 even when the Tier 3/4 header is long."""
+        # Tier 3: long title in header, many short chapters
+        long_title = "T" * 500
+        chapters = tuple((i * 60, "Ch") for i in range(70))
+        r = _build_caption_result(long_title, chapters)
+        for msg in r.index_messages:
+            assert len(msg) <= 4096, f"Chunk exceeds 4096: {len(msg)}"
+
+    def test_index_messages_stay_within_4096_with_long_chapter_name(self):
+        """A single long chapter name does not push a chunk past 4096."""
+        # One very long name — should get its own chunk, not bleed into header chunk
+        very_long_name = "N" * 3000
+        chapters = ((0, "Short"), (60, very_long_name), (120, "Short2"))
+        r = _build_caption_result("Podcast " + "X" * 200, chapters)
+        for msg in r.index_messages:
+            assert len(msg) <= 4096, f"Chunk exceeds 4096: {len(msg)}"
+
+
+class TestSendAudioChapterIndex:
+    async def test_send_audio_sends_index_reply_when_overflow(self, tmp_path):
+        """When chapters overflow caption, a chapter index reply is sent."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from src.bot.handlers import _send_audio
+        from src.bot.progress import ProgressManager
+
+        audio_file = tmp_path / "test.m4a"
+        audio_file.write_bytes(b"fake")
+
+        long_name = "A" * 80
+        # 15 chapters × ~90 chars ≈ 1363 > 1024 → triggers Tier 2 overflow
+        chapters = tuple((i * 60, long_name) for i in range(15))
+        result = DownloadResult(
+            file_path=audio_file,
+            video_id="abc123",
+            title="My Podcast",
+            artist=None,
+            duration_seconds=600,
+            thumbnail_url=None,
+            file_size_bytes=4,
+            chapters=chapters,
         )
 
-    def test_truncation_at_limit(self):
-        chapters = tuple((i * 60, f"Chapter {i + 1}") for i in range(100))
-        result = _build_caption("Title", chapters, max_length=200)
-        assert len(result) <= 200
-        assert result.endswith("\n...")
+        bot = MagicMock()
+        sent_msg = MagicMock()
+        sent_msg.message_id = 42
+        bot.send_audio = AsyncMock(return_value=sent_msg)
+        bot.send_message = AsyncMock(return_value=MagicMock(message_id=43))
 
-    def test_truncation_preserves_title(self):
-        chapters = tuple((i * 60, f"Chapter {i + 1}") for i in range(100))
-        result = _build_caption("Title", chapters, max_length=200)
-        assert result.startswith("🎵 Title")
+        progress = MagicMock(spec=ProgressManager)
+        progress.set_step = AsyncMock()
+        progress.start_animation = AsyncMock()
+        progress.start_upload_animation = AsyncMock()
 
-    def test_title_only_if_fewer_than_two_chapters_fit(self):
-        """If only 0–1 chapter lines fit, show title only."""
-        chapters = ((0, "A" * 100), (60, "B" * 100))
-        result = _build_caption("Title", chapters, max_length=50)
-        assert result == "🎵 Title"
-        assert "\n" not in result
+        with patch("src.bot.handlers._extract_thumbnail", return_value=None):
+            await _send_audio(bot, chat_id=999, result=result, progress=progress)
 
-    def test_never_exceeds_max_length(self):
-        chapters = tuple((i * 60, f"Long chapter name {i}") for i in range(50))
-        for limit in [100, 200, 500, 1024]:
-            result = _build_caption("A Title", chapters, max_length=limit)
-            assert len(result) <= limit
+        bot.send_message.assert_called()
+        call_kwargs = bot.send_message.call_args
+        assert call_kwargs.kwargs.get("reply_to_message_id") == 42
+
+    async def test_send_audio_no_index_reply_when_caption_fits(self, tmp_path):
+        """When chapters fit in caption, no send_message is called."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from src.bot.handlers import _send_audio
+        from src.bot.progress import ProgressManager
+
+        audio_file = tmp_path / "test.m4a"
+        audio_file.write_bytes(b"fake")
+
+        chapters = ((0, "Intro"), (60, "Chorus"))
+        result = DownloadResult(
+            file_path=audio_file,
+            video_id="abc123",
+            title="Short Song",
+            artist=None,
+            duration_seconds=120,
+            thumbnail_url=None,
+            file_size_bytes=4,
+            chapters=chapters,
+        )
+
+        bot = MagicMock()
+        bot.send_audio = AsyncMock(return_value=MagicMock(message_id=10))
+        bot.send_message = AsyncMock()
+
+        progress = MagicMock(spec=ProgressManager)
+        progress.set_step = AsyncMock()
+        progress.start_animation = AsyncMock()
+        progress.start_upload_animation = AsyncMock()
+
+        with patch("src.bot.handlers._extract_thumbnail", return_value=None):
+            await _send_audio(bot, chat_id=999, result=result, progress=progress)
+
+        bot.send_message.assert_not_called()
+
+    async def test_send_audio_chapter_index_failure_swallowed(self, tmp_path):
+        """send_message failure for chapter index does not propagate out of _send_audio."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from telegram.error import NetworkError
+
+        from src.bot.handlers import _send_audio
+        from src.bot.progress import ProgressManager
+
+        audio_file = tmp_path / "test.m4a"
+        audio_file.write_bytes(b"fake")
+
+        long_name = "A" * 80
+        chapters = tuple((i * 60, long_name) for i in range(15))
+        result = DownloadResult(
+            file_path=audio_file,
+            video_id="abc123",
+            title="My Podcast",
+            artist=None,
+            duration_seconds=600,
+            thumbnail_url=None,
+            file_size_bytes=4,
+            chapters=chapters,
+        )
+
+        bot = MagicMock()
+        bot.send_audio = AsyncMock(return_value=MagicMock(message_id=99))
+        bot.send_message = AsyncMock(side_effect=NetworkError("timeout"))
+
+        progress = MagicMock(spec=ProgressManager)
+        progress.set_step = AsyncMock()
+        progress.start_animation = AsyncMock()
+        progress.start_upload_animation = AsyncMock()
+
+        # Must not raise even though send_message always fails
+        with patch("src.bot.handlers._extract_thumbnail", return_value=None):
+            await _send_audio(bot, chat_id=999, result=result, progress=progress)
+
+        # send_audio still succeeded
+        bot.send_audio.assert_called_once()
+
+    async def test_send_chapter_index_continues_after_chunk_failure(self, tmp_path):
+        """Each chunk is attempted independently — one failure does not drop the rest."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from telegram.error import NetworkError
+
+        from src.bot.handlers import _send_audio
+        from src.bot.progress import ProgressManager
+
+        audio_file = tmp_path / "test.m4a"
+        audio_file.write_bytes(b"fake")
+
+        # Tier 4: 90 chapters with 100-char names → multiple index chunks (~3 at 4096 each)
+        chapters = tuple((i * 60, f"Chapter {'X' * 100} {i}") for i in range(90))
+        result = DownloadResult(
+            file_path=audio_file,
+            video_id="abc123",
+            title="Podcast",
+            artist=None,
+            duration_seconds=5400,
+            thumbnail_url=None,
+            file_size_bytes=4,
+            chapters=chapters,
+        )
+
+        call_count = 0
+
+        async def fail_first_then_succeed(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise NetworkError("timeout")
+            return MagicMock(message_id=100 + call_count)
+
+        bot = MagicMock()
+        bot.send_audio = AsyncMock(return_value=MagicMock(message_id=55))
+        bot.send_message = AsyncMock(side_effect=fail_first_then_succeed)
+
+        progress = MagicMock(spec=ProgressManager)
+        progress.set_step = AsyncMock()
+        progress.start_animation = AsyncMock()
+        progress.start_upload_animation = AsyncMock()
+
+        with patch("src.bot.handlers._extract_thumbnail", return_value=None):
+            await _send_audio(bot, chat_id=999, result=result, progress=progress)
+
+        # send_message must have been called more than once (continued after failure)
+        assert bot.send_message.call_count > 1
