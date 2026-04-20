@@ -56,6 +56,19 @@ class DownloadResult:
 
 
 @dataclass(frozen=True)
+class TrackMetadata:
+    """Metadata-only snapshot used by the /refresh flow.
+
+    Returned by :meth:`AudioDownloader.fetch_metadata` without touching disk:
+    yt-dlp is invoked with ``download=False`` so only the info_dict is fetched.
+    """
+
+    video_id: str
+    title: str
+    chapters: tuple[Chapter, ...] | None
+
+
+@dataclass(frozen=True)
 class DownloadProgress:
     """Snapshot of download progress emitted by the progress hook."""
 
@@ -108,6 +121,27 @@ async def _run_blocking[**P, T](
     without patching ``asyncio`` globally.
     """
     return await asyncio.to_thread(func, *args, **kwargs)
+
+
+def _parse_chapters(info: dict[str, Any]) -> tuple[Chapter, ...] | None:
+    """Extract and normalise the ``chapters`` field from a yt-dlp info dict.
+
+    Filters out entries with non-numeric start times, missing / blank titles,
+    and yt-dlp's ``<Untitled Chapter N>`` placeholders. Returns None when no
+    usable chapters remain so callers can treat "no chapters" uniformly.
+    """
+    raw_chapters = info.get("chapters")
+    if not raw_chapters:
+        return None
+    parsed = tuple(
+        (max(0, int(ch["start_time"])), ch["title"])
+        for ch in raw_chapters
+        if isinstance(ch.get("start_time"), (int, float))
+        and isinstance(ch.get("title"), str)
+        and ch["title"].strip()
+        and not ch["title"].strip().startswith("<Untitled Chapter")
+    )
+    return parsed or None
 
 
 # ---------------------------------------------------------------------------
@@ -189,6 +223,74 @@ class AudioDownloader:
                     self._inflight.pop(media_key, None)
                 else:
                     self._inflight[media_key] = (lock, count - 1)
+
+    async def fetch_metadata(self, parsed_url: ParsedURL) -> TrackMetadata:
+        """Fetch title + chapters for *parsed_url* without downloading audio.
+
+        Uses yt-dlp's ``extract_info(download=False)`` path so no file is
+        written and postprocessors are never invoked — roughly an order of
+        magnitude cheaper than a full download.  Intended for the /refresh
+        flow, which updates cached chapter sidecars in place when the upstream
+        author adds timestamps after the original upload.
+
+        Raises :class:`DownloadError` (or subclass) on failure.
+        """
+        opts: dict[str, Any] = {
+            "quiet": True,
+            "no_warnings": True,
+            "skip_download": True,
+            "noplaylist": True,
+            "socket_timeout": self._download_timeout,
+        }
+        if self._proxy_url is not None:
+            opts["proxy"] = self._proxy_url
+        if self._cookies_file is not None:
+            opts["cookiefile"] = self._cookies_file
+
+        try:
+            info = await asyncio.wait_for(
+                _run_blocking(self._run_ydl_metadata, opts, parsed_url.canonical_url),
+                timeout=self._download_timeout,
+            )
+        except TimeoutError as exc:
+            raise DownloadError(
+                f"Metadata fetch timed out after {self._download_timeout}s"
+            ) from exc
+
+        ydl_id = info.get("id", "")
+        if not _TRACK_ID_RE.fullmatch(ydl_id):
+            raise DownloadError(f"yt-dlp returned unexpected video id: {ydl_id!r}")
+
+        # Preserve caller's cache-key semantics (SoundCloud uses sc_slug).
+        result_id = parsed_url.video_id or ydl_id
+        title = info.get("title") or result_id
+
+        return TrackMetadata(
+            video_id=result_id,
+            title=title,
+            chapters=_parse_chapters(info),
+        )
+
+    def _run_ydl_metadata(
+        self, ydl_opts: dict[str, Any], url: str
+    ) -> dict[str, Any]:
+        """Call yt-dlp synchronously with download=False; translate errors."""
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info: dict[str, Any] = ydl.extract_info(url, download=False)
+            return info
+        except (
+            yt_dlp.utils.DownloadError,
+            yt_dlp.utils.ExtractorError,
+            yt_dlp.utils.UnsupportedError,
+        ) as exc:
+            raise VideoUnavailableError(self._sanitize_error(str(exc))) from exc
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            raise DownloadError(
+                self._sanitize_error(f"Unexpected metadata error: {exc}")
+            ) from exc
 
     async def _download_inner(
         self,
@@ -480,21 +582,7 @@ class AudioDownloader:
             else None
         )
 
-        # Extract chapters if available
-        raw_chapters = info.get("chapters")
-        chapters: tuple[Chapter, ...] | None = None
-        if raw_chapters:
-            chapters = (
-                tuple(
-                    (max(0, int(ch["start_time"])), ch["title"])
-                    for ch in raw_chapters
-                    if isinstance(ch.get("start_time"), (int, float))
-                    and isinstance(ch.get("title"), str)
-                    and ch["title"].strip()
-                    and not ch["title"].strip().startswith("<Untitled Chapter")
-                )
-                or None
-            )
+        chapters = _parse_chapters(info)
 
         return DownloadResult(
             file_path=file_path,

@@ -1326,3 +1326,195 @@ class TestPlaylistSparseEntries:
             pytest.raises(DownloadError, match="empty or unavailable"),
         ):
             await downloader.download(_make_parsed_playlist())
+
+
+# ---------------------------------------------------------------------------
+# fetch_metadata — metadata-only refresh, no audio download
+# ---------------------------------------------------------------------------
+
+
+class TestFetchMetadata:
+    """AudioDownloader.fetch_metadata returns TrackMetadata without downloading audio."""
+
+    async def test_fetch_metadata_returns_chapters(self, tmp_path: Path) -> None:
+        from src.downloader.client import TrackMetadata
+
+        info = {
+            **FAKE_SINGLE_INFO,
+            "chapters": [
+                {"start_time": 0, "title": "Intro"},
+                {"start_time": 120, "title": "Verse"},
+                {"start_time": 240, "title": "Chorus"},
+            ],
+        }
+
+        downloader = AudioDownloader(
+            download_dir=tmp_path, max_file_size_bytes=10 * 1024 * 1024
+        )
+
+        captured_opts: list[dict] = []
+
+        def fake_ydl_cls(opts):
+            captured_opts.append(opts)
+            return _make_ydl_mock(info)
+
+        with patch("src.downloader.client.yt_dlp.YoutubeDL", side_effect=fake_ydl_cls):
+            metadata = await downloader.fetch_metadata(_make_parsed_single())
+
+        assert isinstance(metadata, TrackMetadata)
+        assert metadata.video_id == VIDEO_ID
+        assert metadata.title == "Never Gonna Give You Up"
+        assert metadata.chapters == (
+            (0, "Intro"),
+            (120, "Verse"),
+            (240, "Chorus"),
+        )
+        # Must be called with download=False — no audio fetched
+        assert captured_opts, "yt-dlp was not invoked"
+        # extract_info was called with download=False
+        # (verified indirectly: mock's extract_info receives kwargs)
+
+    async def test_fetch_metadata_no_chapters(self, tmp_path: Path) -> None:
+        """Video without chapters returns TrackMetadata with chapters=None."""
+        info = {**FAKE_SINGLE_INFO}  # no "chapters" key
+
+        downloader = AudioDownloader(
+            download_dir=tmp_path, max_file_size_bytes=10 * 1024 * 1024
+        )
+
+        with patch(
+            "src.downloader.client.yt_dlp.YoutubeDL",
+            side_effect=lambda opts: _make_ydl_mock(info),
+        ):
+            metadata = await downloader.fetch_metadata(_make_parsed_single())
+
+        assert metadata.chapters is None
+        assert metadata.video_id == VIDEO_ID
+
+    async def test_fetch_metadata_filters_untitled_chapters(
+        self, tmp_path: Path
+    ) -> None:
+        """Placeholder/empty chapter titles are filtered out (same as _build_result)."""
+        info = {
+            **FAKE_SINGLE_INFO,
+            "chapters": [
+                {"start_time": 0, "title": "Intro"},
+                {"start_time": 60, "title": "<Untitled Chapter 1>"},
+                {"start_time": 120, "title": "   "},
+                {"start_time": 180, "title": "Real Chapter"},
+            ],
+        }
+
+        downloader = AudioDownloader(
+            download_dir=tmp_path, max_file_size_bytes=10 * 1024 * 1024
+        )
+
+        with patch(
+            "src.downloader.client.yt_dlp.YoutubeDL",
+            side_effect=lambda opts: _make_ydl_mock(info),
+        ):
+            metadata = await downloader.fetch_metadata(_make_parsed_single())
+
+        assert metadata.chapters == (
+            (0, "Intro"),
+            (180, "Real Chapter"),
+        )
+
+    async def test_fetch_metadata_skips_download(self, tmp_path: Path) -> None:
+        """extract_info must be called with download=False — no audio fetched."""
+        info = {**FAKE_SINGLE_INFO}
+
+        downloader = AudioDownloader(
+            download_dir=tmp_path, max_file_size_bytes=10 * 1024 * 1024
+        )
+
+        extract_calls: list[dict] = []
+
+        mock_ydl = _make_ydl_mock(info)
+
+        def track_extract(url, **kwargs):
+            extract_calls.append({"url": url, **kwargs})
+            return info
+
+        mock_ydl.extract_info.side_effect = track_extract
+
+        with patch(
+            "src.downloader.client.yt_dlp.YoutubeDL",
+            side_effect=lambda opts: mock_ydl,
+        ):
+            await downloader.fetch_metadata(_make_parsed_single())
+
+        assert len(extract_calls) == 1
+        assert extract_calls[0].get("download") is False
+
+    async def test_fetch_metadata_video_unavailable_raises(
+        self, tmp_path: Path
+    ) -> None:
+        """yt-dlp DownloadError is translated into VideoUnavailableError."""
+        import yt_dlp
+
+        downloader = AudioDownloader(
+            download_dir=tmp_path, max_file_size_bytes=10 * 1024 * 1024
+        )
+
+        mock_ydl = MagicMock()
+        mock_ydl.__enter__ = MagicMock(return_value=mock_ydl)
+        mock_ydl.__exit__ = MagicMock(return_value=False)
+        mock_ydl.extract_info.side_effect = yt_dlp.utils.DownloadError("Video removed")
+
+        with (
+            patch(
+                "src.downloader.client.yt_dlp.YoutubeDL",
+                side_effect=lambda opts: mock_ydl,
+            ),
+            pytest.raises(VideoUnavailableError),
+        ):
+            await downloader.fetch_metadata(_make_parsed_single())
+
+    async def test_fetch_metadata_passes_proxy_and_cookies(
+        self, tmp_path: Path
+    ) -> None:
+        """fetch_metadata must honour proxy_url and cookies_file settings."""
+        cookies = tmp_path / "cookies.txt"
+        cookies.write_text("# test cookies")
+
+        downloader = AudioDownloader(
+            download_dir=tmp_path,
+            max_file_size_bytes=10**9,
+            proxy_url="http://proxy.test:8080",
+            cookies_file=str(cookies),
+        )
+
+        captured_opts: list[dict] = []
+
+        def fake_ydl_cls(opts):
+            captured_opts.append(opts)
+            return _make_ydl_mock(FAKE_SINGLE_INFO)
+
+        with patch("src.downloader.client.yt_dlp.YoutubeDL", side_effect=fake_ydl_cls):
+            await downloader.fetch_metadata(_make_parsed_single())
+
+        assert captured_opts[0]["proxy"] == "http://proxy.test:8080"
+        assert captured_opts[0]["cookiefile"] == str(cookies)
+
+    async def test_fetch_metadata_does_not_run_postprocessors(
+        self, tmp_path: Path
+    ) -> None:
+        """Minimal opts: no postprocessors / progress hooks / outtmpl."""
+        downloader = AudioDownloader(
+            download_dir=tmp_path, max_file_size_bytes=10**9
+        )
+
+        captured_opts: list[dict] = []
+
+        def fake_ydl_cls(opts):
+            captured_opts.append(opts)
+            return _make_ydl_mock(FAKE_SINGLE_INFO)
+
+        with patch("src.downloader.client.yt_dlp.YoutubeDL", side_effect=fake_ydl_cls):
+            await downloader.fetch_metadata(_make_parsed_single())
+
+        opts = captured_opts[0]
+        assert "postprocessors" not in opts or not opts["postprocessors"]
+        assert "progress_hooks" not in opts or not opts["progress_hooks"]
+        assert "embedchapters" not in opts or not opts["embedchapters"]
