@@ -85,8 +85,59 @@ _HELP_TEXT = (
     "SoundCloud:\n"
     "• https://soundcloud.com/artist/track\n"
     "• https://soundcloud.com/artist/sets/playlist\n"
-    "• https://on.soundcloud.com/...\n"
+    "• https://on.soundcloud.com/...\n\n"
+    "Commands:\n"
+    "• /refresh <URL> — re-check chapters/metadata and resend "
+    "(useful when the author added timestamps after upload).\n"
+    "• /redownload <URL> — evict the cached copy and download again "
+    "from scratch.\n"
 )
+
+
+# ---------------------------------------------------------------------------
+# Shared access-control + rate-limit helpers
+# ---------------------------------------------------------------------------
+
+
+def _is_user_allowed(user_id: int, settings: Settings) -> bool:
+    """Return True if *user_id* is permitted (or the allow-list is empty)."""
+    allowed = settings.ALLOWED_USER_IDS
+    return not allowed or user_id in allowed
+
+
+async def _consume_rate_limit(user_id: int, settings: Settings) -> bool:
+    """Atomically check-and-record the per-user sliding-window rate limit.
+
+    Returns True when the request fits within the 60-second window (a slot
+    has been consumed); False when the user has exceeded their limit.
+    """
+    async with _rate_limit_lock:
+        global _rate_limit_request_count  # noqa: PLW0603
+        rate_limit: int = settings.RATE_LIMIT_PER_MINUTE
+        now = time.monotonic()
+        timestamps = _user_request_times.get(user_id, [])
+        recent = [t for t in timestamps if now - t < 60.0]
+        if len(recent) >= rate_limit:
+            if recent:
+                _user_request_times[user_id] = recent
+            else:
+                _user_request_times.pop(user_id, None)
+            return False
+        recent.append(now)
+        _user_request_times[user_id] = recent
+
+        # Periodic cleanup of stale entries to prevent unbounded growth
+        _rate_limit_request_count += 1
+        if _rate_limit_request_count >= _RATE_LIMIT_CLEANUP_INTERVAL:
+            _rate_limit_request_count = 0
+            stale_uids = [
+                uid
+                for uid, ts in _user_request_times.items()
+                if not any(now - t < 60.0 for t in ts)
+            ]
+            for uid in stale_uids:
+                del _user_request_times[uid]
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -124,8 +175,7 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     text: str = update.message.text or ""
 
     # --- Access control ---------------------------------------------------
-    allowed: list[int] = settings.ALLOWED_USER_IDS
-    if allowed and user_id not in allowed:
+    if not _is_user_allowed(user_id, settings):
         logger.warning("Rejected user %d (not in ALLOWED_USER_IDS)", user_id)
         return
 
@@ -137,36 +187,11 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     parsed_url = parsed_urls[0]
 
     # --- Rate limiting ----------------------------------------------------
-    async with _rate_limit_lock:
-        global _rate_limit_request_count  # noqa: PLW0603
-        rate_limit: int = settings.RATE_LIMIT_PER_MINUTE
-        now = time.monotonic()
-        timestamps = _user_request_times.get(user_id, [])
-        # Keep only timestamps within the last 60 seconds
-        recent = [t for t in timestamps if now - t < 60.0]
-        if len(recent) >= rate_limit:
-            if recent:
-                _user_request_times[user_id] = recent
-            else:
-                _user_request_times.pop(user_id, None)
-            await update.message.reply_text(
-                "You have reached the rate limit. Please wait a minute."
-            )
-            return
-        recent.append(now)
-        _user_request_times[user_id] = recent
-
-        # Periodic cleanup of stale entries to prevent unbounded growth
-        _rate_limit_request_count += 1
-        if _rate_limit_request_count >= _RATE_LIMIT_CLEANUP_INTERVAL:
-            _rate_limit_request_count = 0
-            stale_uids = [
-                uid
-                for uid, ts in _user_request_times.items()
-                if not any(now - t < 60.0 for t in ts)
-            ]
-            for uid in stale_uids:
-                del _user_request_times[uid]
+    if not await _consume_rate_limit(user_id, settings):
+        await update.message.reply_text(
+            "You have reached the rate limit. Please wait a minute."
+        )
+        return
 
     # --- Progress message -------------------------------------------------
     progress = ProgressManager(
