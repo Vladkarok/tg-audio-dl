@@ -271,9 +271,7 @@ class AudioDownloader:
             chapters=_parse_chapters(info),
         )
 
-    def _run_ydl_metadata(
-        self, ydl_opts: dict[str, Any], url: str
-    ) -> dict[str, Any]:
+    def _run_ydl_metadata(self, ydl_opts: dict[str, Any], url: str) -> dict[str, Any]:
         """Call yt-dlp synchronously with download=False; translate errors."""
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:

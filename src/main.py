@@ -13,6 +13,7 @@ from src.bot.filters import MediaURLFilter
 from src.bot.handlers import (
     handle_help,
     handle_redownload,
+    handle_refresh,
     handle_start,
     handle_url,
 )
@@ -118,6 +119,7 @@ def build_application(settings: Settings) -> Application[Any, Any, Any, Any, Any
     app.add_handler(CommandHandler("start", handle_start))
     app.add_handler(CommandHandler("help", handle_help))
     app.add_handler(CommandHandler("redownload", handle_redownload))
+    app.add_handler(CommandHandler("refresh", handle_refresh))
     app.add_handler(MessageHandler(MediaURLFilter(), handle_url))
 
     return app

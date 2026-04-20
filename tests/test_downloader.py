@@ -1501,9 +1501,7 @@ class TestFetchMetadata:
         self, tmp_path: Path
     ) -> None:
         """Minimal opts: no postprocessors / progress hooks / outtmpl."""
-        downloader = AudioDownloader(
-            download_dir=tmp_path, max_file_size_bytes=10**9
-        )
+        downloader = AudioDownloader(download_dir=tmp_path, max_file_size_bytes=10**9)
 
         captured_opts: list[dict] = []
 

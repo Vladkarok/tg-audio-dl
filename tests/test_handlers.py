@@ -15,6 +15,7 @@ from src.bot.handlers import (
     _user_request_times,
     handle_help,
     handle_redownload,
+    handle_refresh,
     handle_start,
     handle_url,
 )
@@ -22,6 +23,8 @@ from src.downloader.client import (
     DownloadError,
     DownloadResult,
     FileTooLargeError,
+    TrackMetadata,
+    VideoUnavailableError,
 )
 
 # ---------------------------------------------------------------------------
@@ -911,6 +914,314 @@ class TestHandleRedownload:
             await handle_redownload(update, context)
 
         downloader.download.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# /refresh command — metadata-only refresh
+# ---------------------------------------------------------------------------
+
+
+class TestHandleRefresh:
+    async def test_refresh_not_cached_falls_through_to_download(self, tmp_path):
+        """Cache miss: /refresh behaves like a normal URL send (full download)."""
+        audio_file = tmp_path / "dQw4w9WgXcQ.m4a"
+        audio_file.write_bytes(b"audio")
+
+        update = make_update(text="/refresh https://youtu.be/dQw4w9WgXcQ")
+        cache = MagicMock()
+        cache.exists = AsyncMock(return_value=False)
+        cache.evict = AsyncMock()
+        cache.put = AsyncMock(return_value=audio_file)
+        cache.get = AsyncMock(return_value=None)
+        cache.get_file_id = AsyncMock(return_value=None)
+        cache.store_file_id = AsyncMock()
+        cache.get_chapters = AsyncMock(return_value=None)
+        cache.store_chapters = AsyncMock()
+
+        result = DownloadResult(
+            file_path=audio_file,
+            video_id="dQw4w9WgXcQ",
+            title="Test",
+            artist=None,
+            duration_seconds=1,
+            thumbnail_url=None,
+            file_size_bytes=5,
+        )
+        downloader = MagicMock()
+        downloader.download = AsyncMock(return_value=[result])
+        downloader.fetch_metadata = AsyncMock()
+
+        context = make_context(cache=cache, downloader=downloader)
+        context.bot.send_audio = AsyncMock(
+            return_value=MagicMock(audio=MagicMock(file_id="fid"))
+        )
+
+        with (
+            patch("asyncio.sleep", new_callable=AsyncMock),
+            patch("pathlib.Path.open", mock_open(read_data=b"audio")),
+        ):
+            await handle_refresh(update, context)
+
+        # No metadata-only path taken; full download happens instead.
+        downloader.fetch_metadata.assert_not_called()
+        downloader.download.assert_called_once()
+
+    async def test_refresh_cached_unchanged_chapters_resends_without_storing(
+        self, tmp_path
+    ):
+        """Cached, chapters unchanged: no store_chapters, still resends audio."""
+        audio_file = tmp_path / "dQw4w9WgXcQ.m4a"
+        audio_file.write_bytes(b"audio")
+
+        old_chapters = ((0, "Intro"), (60, "Chorus"))
+
+        update = make_update(text="/refresh https://youtu.be/dQw4w9WgXcQ")
+        cache = MagicMock()
+        cache.exists = AsyncMock(return_value=True)
+        cache.get = AsyncMock(return_value=audio_file)
+        cache.get_file_id = AsyncMock(return_value="AgACAg_cached_fid")
+        cache.store_file_id = AsyncMock()
+        cache.get_chapters = AsyncMock(return_value=old_chapters)
+        cache.store_chapters = AsyncMock()
+
+        downloader = MagicMock()
+        downloader.download = AsyncMock()
+        downloader.fetch_metadata = AsyncMock(
+            return_value=TrackMetadata(
+                video_id="dQw4w9WgXcQ",
+                title="Test",
+                chapters=old_chapters,
+            )
+        )
+
+        context = make_context(cache=cache, downloader=downloader)
+        context.bot.send_audio = AsyncMock(
+            return_value=MagicMock(audio=MagicMock(file_id="AgACAg_cached_fid"))
+        )
+
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            await handle_refresh(update, context)
+
+        downloader.fetch_metadata.assert_called_once()
+        downloader.download.assert_not_called()
+        cache.store_chapters.assert_not_called()
+        context.bot.send_audio.assert_called_once()
+
+    async def test_refresh_cached_new_chapters_stored_and_resent(self, tmp_path):
+        """Cached, new chapters: store_chapters called with new tuple; audio resent."""
+        audio_file = tmp_path / "dQw4w9WgXcQ.m4a"
+        audio_file.write_bytes(b"audio")
+
+        new_chapters = (
+            (0, "Intro"),
+            (60, "Verse 1"),
+            (120, "Chorus"),
+            (180, "Verse 2"),
+        )
+
+        update = make_update(text="/refresh https://youtu.be/dQw4w9WgXcQ")
+        cache = MagicMock()
+        cache.exists = AsyncMock(return_value=True)
+        cache.get = AsyncMock(return_value=audio_file)
+        cache.get_file_id = AsyncMock(return_value="AgACAg_cached_fid")
+        cache.store_file_id = AsyncMock()
+        cache.get_chapters = AsyncMock(return_value=None)  # none cached before
+        cache.store_chapters = AsyncMock()
+
+        downloader = MagicMock()
+        downloader.fetch_metadata = AsyncMock(
+            return_value=TrackMetadata(
+                video_id="dQw4w9WgXcQ",
+                title="Test",
+                chapters=new_chapters,
+            )
+        )
+
+        context = make_context(cache=cache, downloader=downloader)
+        context.bot.send_audio = AsyncMock(
+            return_value=MagicMock(audio=MagicMock(file_id="AgACAg_cached_fid"))
+        )
+
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            await handle_refresh(update, context)
+
+        cache.store_chapters.assert_called_once_with("dQw4w9WgXcQ", new_chapters)
+        context.bot.send_audio.assert_called_once()
+        # Caption must contain at least one of the new chapter names
+        call_kwargs = context.bot.send_audio.call_args
+        caption = call_kwargs.kwargs.get("caption", "")
+        assert "Intro" in caption or "Verse 1" in caption
+
+    async def test_refresh_preserves_old_chapters_when_fresh_is_none(self, tmp_path):
+        """Transient extractor miss (chapters=None): keep old, still resend."""
+        audio_file = tmp_path / "dQw4w9WgXcQ.m4a"
+        audio_file.write_bytes(b"audio")
+
+        old_chapters = ((0, "Old Intro"), (60, "Old Chorus"))
+
+        update = make_update(text="/refresh https://youtu.be/dQw4w9WgXcQ")
+        cache = MagicMock()
+        cache.exists = AsyncMock(return_value=True)
+        cache.get = AsyncMock(return_value=audio_file)
+        cache.get_file_id = AsyncMock(return_value="AgACAg_cached_fid")
+        cache.store_file_id = AsyncMock()
+        cache.get_chapters = AsyncMock(return_value=old_chapters)
+        cache.store_chapters = AsyncMock()
+
+        downloader = MagicMock()
+        downloader.fetch_metadata = AsyncMock(
+            return_value=TrackMetadata(
+                video_id="dQw4w9WgXcQ",
+                title="Test",
+                chapters=None,
+            )
+        )
+
+        context = make_context(cache=cache, downloader=downloader)
+        context.bot.send_audio = AsyncMock(
+            return_value=MagicMock(audio=MagicMock(file_id="AgACAg_cached_fid"))
+        )
+
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            await handle_refresh(update, context)
+
+        cache.store_chapters.assert_not_called()  # do not wipe good data
+        context.bot.send_audio.assert_called_once()
+        caption = context.bot.send_audio.call_args.kwargs.get("caption", "")
+        assert "Old Intro" in caption or "Old Chorus" in caption
+
+    async def test_refresh_video_unavailable_tells_user(self, tmp_path):
+        """VideoUnavailableError from fetch_metadata: user gets a friendly message."""
+        audio_file = tmp_path / "dQw4w9WgXcQ.m4a"
+        audio_file.write_bytes(b"audio")
+
+        update = make_update(text="/refresh https://youtu.be/dQw4w9WgXcQ")
+        cache = MagicMock()
+        cache.exists = AsyncMock(return_value=True)
+        cache.get_chapters = AsyncMock(return_value=None)
+        cache.get_file_id = AsyncMock(return_value=None)
+        cache.get = AsyncMock(return_value=audio_file)
+
+        downloader = MagicMock()
+        downloader.fetch_metadata = AsyncMock(
+            side_effect=VideoUnavailableError("removed")
+        )
+
+        context = make_context(cache=cache, downloader=downloader)
+
+        await handle_refresh(update, context)
+
+        context.bot.send_audio.assert_not_called()
+        context.bot.edit_message_text.assert_called()
+
+    async def test_refresh_no_url_replies_usage(self):
+        """/refresh without a URL returns a usage hint."""
+        update = make_update(text="/refresh")
+        context = make_context()
+
+        await handle_refresh(update, context)
+
+        update.message.reply_text.assert_called_once()
+        msg = update.message.reply_text.call_args.args[0]
+        assert "/refresh" in msg.lower() or "url" in msg.lower()
+
+    async def test_refresh_playlist_not_supported(self):
+        """/refresh rejects playlist URLs — metadata refresh is per-video."""
+        update = make_update(
+            text=(
+                "/refresh "
+                "https://www.youtube.com/playlist?list=PLrEnWoR732-BHrPp_Pm8_VleD68f9s14-"
+            )
+        )
+        cache = MagicMock()
+        cache.exists = AsyncMock()
+        downloader = MagicMock()
+        downloader.fetch_metadata = AsyncMock()
+        context = make_context(cache=cache, downloader=downloader)
+
+        await handle_refresh(update, context)
+
+        update.message.reply_text.assert_called_once()
+        downloader.fetch_metadata.assert_not_called()
+        cache.exists.assert_not_called()
+
+    async def test_refresh_disallowed_user_ignored(self):
+        """Unauthorized users get no effect."""
+        update = make_update(
+            user_id=99999, text="/refresh https://youtu.be/dQw4w9WgXcQ"
+        )
+        context = make_context(allowed_users=[11111])
+
+        await handle_refresh(update, context)
+
+        context.bot_data["downloader"].fetch_metadata.assert_not_called() if hasattr(
+            context.bot_data["downloader"], "fetch_metadata"
+        ) else None
+
+    async def test_refresh_rate_limited(self):
+        """Rate-limited /refresh does not fetch metadata."""
+        user_id = 88888
+        now = time.monotonic()
+        _user_request_times[user_id] = [now - i for i in range(5)]
+
+        update = make_update(
+            user_id=user_id, text="/refresh https://youtu.be/dQw4w9WgXcQ"
+        )
+        downloader = MagicMock()
+        downloader.fetch_metadata = AsyncMock()
+        context = make_context(downloader=downloader, rate_limit=5)
+
+        await handle_refresh(update, context)
+
+        update.message.reply_text.assert_called_once()
+        downloader.fetch_metadata.assert_not_called()
+
+    async def test_refresh_file_id_resend_fallback_to_upload(self, tmp_path):
+        """When file_id resend fails, fall back to uploading from cache."""
+        audio_file = tmp_path / "dQw4w9WgXcQ.m4a"
+        audio_file.write_bytes(b"audio bytes")
+
+        new_chapters = ((0, "New"), (30, "Fresh"))
+
+        update = make_update(text="/refresh https://youtu.be/dQw4w9WgXcQ")
+        cache = MagicMock()
+        cache.exists = AsyncMock(return_value=True)
+        cache.get = AsyncMock(return_value=audio_file)
+        cache.get_file_id = AsyncMock(return_value="AgACAg_stale_fid")
+        cache.store_file_id = AsyncMock()
+        cache.get_chapters = AsyncMock(return_value=None)
+        cache.store_chapters = AsyncMock()
+
+        downloader = MagicMock()
+        downloader.fetch_metadata = AsyncMock(
+            return_value=TrackMetadata(
+                video_id="dQw4w9WgXcQ",
+                title="Test",
+                chapters=new_chapters,
+            )
+        )
+
+        # First send_audio call (file_id path) raises; second (upload path) succeeds
+        call_count = 0
+
+        async def send_audio_side_effect(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise RuntimeError("file_id rejected by Telegram")
+            return MagicMock(audio=MagicMock(file_id="new_fid"))
+
+        context = make_context(cache=cache, downloader=downloader)
+        context.bot.send_audio = AsyncMock(side_effect=send_audio_side_effect)
+
+        with (
+            patch("asyncio.sleep", new_callable=AsyncMock),
+            patch("pathlib.Path.open", mock_open(read_data=b"audio bytes")),
+        ):
+            await handle_refresh(update, context)
+
+        # send_audio called twice: once via file_id, once via upload
+        assert context.bot.send_audio.call_count == 2
 
 
 # ---------------------------------------------------------------------------
