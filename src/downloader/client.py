@@ -272,7 +272,15 @@ class AudioDownloader:
         )
 
     def _run_ydl_metadata(self, ydl_opts: dict[str, Any], url: str) -> dict[str, Any]:
-        """Call yt-dlp synchronously with download=False; translate errors."""
+        """Call yt-dlp synchronously with download=False; translate errors.
+
+        Unlike :meth:`_run_ydl`, we *don't* promote every yt-dlp error to
+        :class:`VideoUnavailableError` — a metadata fetch can also fail on
+        transient extractor/proxy/network hiccups, and telling the user
+        "video unavailable, private, age-restricted, or geo-blocked" in
+        those cases is misleading. Genuinely unavailable videos surface
+        via the same generic path (matches ``_run_ydl_flat``).
+        """
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info: dict[str, Any] = ydl.extract_info(url, download=False)
@@ -282,7 +290,9 @@ class AudioDownloader:
             yt_dlp.utils.ExtractorError,
             yt_dlp.utils.UnsupportedError,
         ) as exc:
-            raise VideoUnavailableError(self._sanitize_error(str(exc))) from exc
+            raise DownloadError(
+                self._sanitize_error(f"Failed to fetch metadata: {exc}")
+            ) from exc
         except asyncio.CancelledError:
             raise
         except Exception as exc:

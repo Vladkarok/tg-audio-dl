@@ -1450,7 +1450,13 @@ class TestFetchMetadata:
     async def test_fetch_metadata_video_unavailable_raises(
         self, tmp_path: Path
     ) -> None:
-        """yt-dlp DownloadError is translated into VideoUnavailableError."""
+        """yt-dlp extractor errors surface as generic DownloadError.
+
+        Unlike the full-download path, a metadata fetch failure is often
+        transient (proxy, network, rate limit), so we refuse to claim the
+        video is unavailable — we raise the base DownloadError and let the
+        caller's user-facing mapping pick a neutral message.
+        """
         import yt_dlp
 
         downloader = AudioDownloader(
@@ -1467,9 +1473,12 @@ class TestFetchMetadata:
                 "src.downloader.client.yt_dlp.YoutubeDL",
                 side_effect=lambda opts: mock_ydl,
             ),
-            pytest.raises(VideoUnavailableError),
+            pytest.raises(DownloadError) as excinfo,
         ):
             await downloader.fetch_metadata(_make_parsed_single())
+
+        # Must NOT be the narrower VideoUnavailableError subclass.
+        assert not isinstance(excinfo.value, VideoUnavailableError)
 
     async def test_fetch_metadata_passes_proxy_and_cookies(
         self, tmp_path: Path

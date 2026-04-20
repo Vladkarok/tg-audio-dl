@@ -1223,6 +1223,66 @@ class TestHandleRefresh:
         # send_audio called twice: once via file_id, once via upload
         assert context.bot.send_audio.call_count == 2
 
+    async def test_refresh_stale_cache_falls_through_to_download(self, tmp_path):
+        """exists()=True but get()=None (stale cache) → fresh download, no error."""
+        audio_file = tmp_path / "dQw4w9WgXcQ.m4a"
+        audio_file.write_bytes(b"fresh audio")
+
+        update = make_update(text="/refresh https://youtu.be/dQw4w9WgXcQ")
+        cache = MagicMock()
+        # Stale-cache state: metadata says hit, but file retrieval fails.
+        cache.exists = AsyncMock(return_value=True)
+        cache.get = AsyncMock(return_value=None)
+        cache.get_file_id = AsyncMock(return_value=None)
+        cache.store_file_id = AsyncMock()
+        cache.get_chapters = AsyncMock(return_value=None)
+        cache.store_chapters = AsyncMock()
+        cache.evict = AsyncMock()
+        # Fresh download lands here.
+        cache.put = AsyncMock(return_value=audio_file)
+
+        fresh_result = DownloadResult(
+            file_path=audio_file,
+            video_id="dQw4w9WgXcQ",
+            title="Fresh",
+            artist=None,
+            duration_seconds=1,
+            thumbnail_url=None,
+            file_size_bytes=11,
+        )
+        downloader = MagicMock()
+        downloader.download = AsyncMock(return_value=[fresh_result])
+        downloader.fetch_metadata = AsyncMock(
+            return_value=TrackMetadata(
+                video_id="dQw4w9WgXcQ",
+                title="Fresh",
+                chapters=None,
+            )
+        )
+
+        context = make_context(cache=cache, downloader=downloader)
+        context.bot.send_audio = AsyncMock(
+            return_value=MagicMock(audio=MagicMock(file_id="new_fid"))
+        )
+
+        with (
+            patch("asyncio.sleep", new_callable=AsyncMock),
+            patch("pathlib.Path.open", mock_open(read_data=b"fresh audio")),
+        ):
+            await handle_refresh(update, context)
+
+        # Must NOT surface "Cached audio file is missing" to the user.
+        error_edits = [
+            call
+            for call in context.bot.edit_message_text.call_args_list
+            if "missing" in (call.kwargs.get("text") or "").lower()
+        ]
+        assert error_edits == [], (
+            "Stale cache must fall through to download, not surface an error"
+        )
+        downloader.download.assert_called_once()
+        context.bot.send_audio.assert_called()
+
 
 # ---------------------------------------------------------------------------
 # Existing tests

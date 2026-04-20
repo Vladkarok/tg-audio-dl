@@ -421,12 +421,17 @@ async def handle_refresh(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         if sent_msg is None:
             cached_path: Path | None = await cache.get(video_id)
             if cached_path is None:
+                # Stale cache: exists() said yes but the file is gone
+                # (S3 eviction, race, etc.). Recover by downloading fresh
+                # instead of surfacing an error — matches _process_url's
+                # behavior in the same state.
                 logger.warning(
-                    "Refresh: cache.exists()=True but cache.get()=None for %s",
+                    "Refresh: cache.exists()=True but cache.get()=None for %s — "
+                    "falling through to fresh download",
                     video_id,
                 )
-                await _edit_error(
-                    context.bot, progress, "❌ Cached audio file is missing."
+                await _process_url(
+                    update, context, progress, parsed_url, force_redownload=True
                 )
                 return
             cached_title, cached_artist = _extract_audio_metadata(cached_path)
