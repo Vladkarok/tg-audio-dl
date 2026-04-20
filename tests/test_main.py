@@ -92,22 +92,23 @@ def test_build_application_registers_handlers():
 
         build_application(settings)
 
-    # Verify the three handler groups were added
-    assert mock_app.add_handler.call_count == 3
+    # Verify the four handler groups were added
+    assert mock_app.add_handler.call_count == 4
 
     added_handlers = [call.args[0] for call in mock_app.add_handler.call_args_list]
 
     command_handlers = [h for h in added_handlers if isinstance(h, CommandHandler)]
     message_handlers = [h for h in added_handlers if isinstance(h, MessageHandler)]
 
-    assert len(command_handlers) == 2, (
-        "Expected exactly 2 CommandHandlers (/start, /help)"
+    assert len(command_handlers) == 3, (
+        "Expected exactly 3 CommandHandlers (/start, /help, /redownload)"
     )
     assert len(message_handlers) == 1, "Expected exactly 1 MessageHandler (URL filter)"
 
     command_names = {name for h in command_handlers for name in h.commands}
     assert "start" in command_names
     assert "help" in command_names
+    assert "redownload" in command_names
 
 
 def test_build_application_stores_settings_in_bot_data():

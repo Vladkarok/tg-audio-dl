@@ -211,13 +211,101 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             )
 
 
+# ---------------------------------------------------------------------------
+# /redownload command — evict cache then force a fresh download
+# ---------------------------------------------------------------------------
+
+
+_REDOWNLOAD_USAGE = (
+    "Usage: /redownload <YouTube or SoundCloud URL>\n"
+    "Evicts the cached copy (if any) and downloads again from scratch."
+)
+
+
+async def handle_redownload(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """Force a full redownload, ignoring any existing cache entry.
+
+    Useful when the upstream audio has changed or when sidecar metadata
+    (chapters, file_id) needs a clean reset.
+    """
+    if update.effective_user is None or update.message is None:
+        return
+
+    settings: Settings = context.bot_data["settings"]
+    user_id: int = update.effective_user.id
+    text: str = update.message.text or ""
+
+    if not _is_user_allowed(user_id, settings):
+        logger.warning("Rejected user %d (not in ALLOWED_USER_IDS)", user_id)
+        return
+
+    parsed_urls = extract_media_urls(text)
+    if not parsed_urls:
+        await update.message.reply_text(_REDOWNLOAD_USAGE)
+        return
+
+    parsed_url = parsed_urls[0]
+
+    if not await _consume_rate_limit(user_id, settings):
+        await update.message.reply_text(
+            "You have reached the rate limit. Please wait a minute."
+        )
+        return
+
+    cache: CacheBackend = context.bot_data["cache"]
+
+    # Evict cached audio + file_id + chapters sidecar before redownloading so
+    # the fresh download lands on a clean slate. Skipped for playlists (they
+    # have no top-level cache key; per-track caches are replaced on re-put).
+    if parsed_url.video_id:
+        try:
+            await cache.evict(parsed_url.video_id)
+        except Exception:
+            # Non-fatal: a failing evict still lets the download overwrite the
+            # audio, at the cost of possibly-stale sidecars. The user's intent
+            # (fresh audio) is preserved; we don't want to block on a flaky S3.
+            logger.warning(
+                "Failed to evict cache for %s before redownload",
+                parsed_url.video_id,
+                exc_info=True,
+            )
+
+    progress = ProgressManager(
+        context.bot,
+        chat_id=update.message.chat_id,
+        reply_to_message_id=update.message.message_id,
+    )
+    await progress.create()
+
+    try:
+        await _process_url(
+            update, context, progress, parsed_url, force_redownload=True
+        )
+    except Exception:
+        logger.exception(
+            "Unexpected error in handle_redownload for user %d", user_id
+        )
+        with contextlib.suppress(Exception):
+            await progress.set_step(
+                Step.UPLOADING, StepStatus.ERROR, "An unexpected error occurred"
+            )
+
+
 async def _process_url(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
     progress: ProgressManager,
     parsed_url: ParsedURL,
+    force_redownload: bool = False,
 ) -> None:
-    """Inner orchestration: cache check → download → upload."""
+    """Inner orchestration: cache check → download → upload.
+
+    When force_redownload is True, the cache-hit short-circuit is skipped —
+    download always runs. Callers that pass True are expected to have already
+    evicted any cached entry so the fresh download cleanly replaces it.
+    """
     if update.message is None:
         return
 
@@ -227,7 +315,7 @@ async def _process_url(
     video_id = parsed_url.video_id  # None for playlists
 
     # --- Cache check (single videos only) --------------------------------
-    if video_id and await cache.exists(video_id):
+    if not force_redownload and video_id and await cache.exists(video_id):
         await progress.set_step(Step.DOWNLOADING, StepStatus.DONE, "Found in cache")
 
         # Try instant resend via Telegram file_id if available
