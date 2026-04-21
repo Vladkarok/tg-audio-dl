@@ -353,6 +353,12 @@ async def handle_refresh(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     try:
         # --- Cache miss → full download (no silent no-op) ----------------
+        # parsed_url.video_id is None for on.soundcloud.com short URLs; we
+        # can't key the cache without resolving the slug first. Falling
+        # through to a full download is suboptimal (it re-downloads audio
+        # that may already be cached under the resolved sc_slug) but still
+        # correct — the user gets the track they asked to refresh. Users who
+        # want the cheap metadata-only path should paste the canonical URL.
         if not video_id or not await cache.exists(video_id):
             await _process_url(update, context, progress, parsed_url)
             return

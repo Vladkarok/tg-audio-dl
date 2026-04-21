@@ -1550,3 +1550,50 @@ class TestFetchMetadata:
         assert "postprocessors" not in opts or not opts["postprocessors"]
         assert "progress_hooks" not in opts or not opts["progress_hooks"]
         assert "embedchapters" not in opts or not opts["embedchapters"]
+
+    async def test_fetch_metadata_enables_node_js_runtime(self, tmp_path: Path) -> None:
+        """fetch_metadata must set js_runtimes={'node': {}} like download().
+
+        YouTube's JS signature challenge requires a Node.js runtime even
+        for metadata-only extract_info calls on many videos.
+        """
+        downloader = AudioDownloader(download_dir=tmp_path, max_file_size_bytes=10**9)
+
+        captured_opts: list[dict] = []
+
+        def fake_ydl_cls(opts):
+            captured_opts.append(opts)
+            return _make_ydl_mock(FAKE_SINGLE_INFO)
+
+        with patch("src.downloader.client.yt_dlp.YoutubeDL", side_effect=fake_ydl_cls):
+            await downloader.fetch_metadata(_make_parsed_single())
+
+        assert captured_opts[0].get("js_runtimes") == {"node": {}}
+
+    async def test_fetch_metadata_geo_block_classified_as_unavailable(
+        self, tmp_path: Path
+    ) -> None:
+        """YouTube's "has not made this video available" wording →
+        VideoUnavailableError, not generic DownloadError.
+        """
+        import yt_dlp
+
+        downloader = AudioDownloader(
+            download_dir=tmp_path, max_file_size_bytes=10 * 1024 * 1024
+        )
+
+        mock_ydl = MagicMock()
+        mock_ydl.__enter__ = MagicMock(return_value=mock_ydl)
+        mock_ydl.__exit__ = MagicMock(return_value=False)
+        mock_ydl.extract_info.side_effect = yt_dlp.utils.DownloadError(
+            "The uploader has not made this video available in your country"
+        )
+
+        with (
+            patch(
+                "src.downloader.client.yt_dlp.YoutubeDL",
+                side_effect=lambda opts: mock_ydl,
+            ),
+            pytest.raises(VideoUnavailableError),
+        ):
+            await downloader.fetch_metadata(_make_parsed_single())

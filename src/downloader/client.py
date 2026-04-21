@@ -138,6 +138,7 @@ _UNAVAILABLE_MARKERS = (
     "sign in to confirm your age",
     "not available in your country",
     "not available in your region",
+    "has not made this video available",  # yt-dlp YouTube geo-block phrasing
     "geo-restricted",
     "geo restricted",
     "no longer available",
@@ -267,6 +268,10 @@ class AudioDownloader:
         flow, which updates cached chapter sidecars in place when the upstream
         author adds timestamps after the original upload.
 
+        Shares the per-media lock and global concurrency semaphore with
+        :meth:`download` so bursts of /refresh don't duplicate yt-dlp scrapes
+        for the same URL or exceed ``max_concurrent_downloads``.
+
         Raises :class:`DownloadError` (or subclass) on failure.
         """
         opts: dict[str, Any] = {
@@ -275,21 +280,45 @@ class AudioDownloader:
             "skip_download": True,
             "noplaylist": True,
             "socket_timeout": self._download_timeout,
+            # Same Node.js setting as the download path — YouTube's JS
+            # signature challenge is required even for metadata-only
+            # extract_info calls on many videos.
+            "js_runtimes": {"node": {}},
         }
         if self._proxy_url is not None:
             opts["proxy"] = self._proxy_url
         if self._cookies_file is not None:
             opts["cookiefile"] = self._cookies_file
 
+        media_key = parsed_url.video_id or parsed_url.canonical_url
+        if media_key in self._inflight:
+            lock, count = self._inflight[media_key]
+            self._inflight[media_key] = (lock, count + 1)
+        else:
+            lock = asyncio.Lock()
+            self._inflight[media_key] = (lock, 1)
+
         try:
-            info = await asyncio.wait_for(
-                _run_blocking(self._run_ydl_metadata, opts, parsed_url.canonical_url),
-                timeout=self._download_timeout,
-            )
-        except TimeoutError as exc:
-            raise DownloadError(
-                f"Metadata fetch timed out after {self._download_timeout}s"
-            ) from exc
+            async with lock, self._semaphore:
+                try:
+                    info = await asyncio.wait_for(
+                        _run_blocking(
+                            self._run_ydl_metadata, opts, parsed_url.canonical_url
+                        ),
+                        timeout=self._download_timeout,
+                    )
+                except TimeoutError as exc:
+                    raise DownloadError(
+                        f"Metadata fetch timed out after {self._download_timeout}s"
+                    ) from exc
+        finally:
+            entry = self._inflight.get(media_key)
+            if entry is not None:
+                _, count = entry
+                if count <= 1:
+                    self._inflight.pop(media_key, None)
+                else:
+                    self._inflight[media_key] = (lock, count - 1)
 
         ydl_id = info.get("id", "")
         if not _TRACK_ID_RE.fullmatch(ydl_id):
