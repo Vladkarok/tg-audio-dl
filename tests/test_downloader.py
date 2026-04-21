@@ -1447,15 +1447,39 @@ class TestFetchMetadata:
         assert len(extract_calls) == 1
         assert extract_calls[0].get("download") is False
 
-    async def test_fetch_metadata_video_unavailable_raises(
+    async def test_fetch_metadata_unavailable_message_raises_unavailable(
         self, tmp_path: Path
     ) -> None:
-        """yt-dlp extractor errors surface as generic DownloadError.
+        """An unavailability-marker message raises VideoUnavailableError."""
+        import yt_dlp
 
-        Unlike the full-download path, a metadata fetch failure is often
-        transient (proxy, network, rate limit), so we refuse to claim the
-        video is unavailable — we raise the base DownloadError and let the
-        caller's user-facing mapping pick a neutral message.
+        downloader = AudioDownloader(
+            download_dir=tmp_path, max_file_size_bytes=10 * 1024 * 1024
+        )
+
+        mock_ydl = MagicMock()
+        mock_ydl.__enter__ = MagicMock(return_value=mock_ydl)
+        mock_ydl.__exit__ = MagicMock(return_value=False)
+        mock_ydl.extract_info.side_effect = yt_dlp.utils.DownloadError(
+            "ERROR: This video is private"
+        )
+
+        with (
+            patch(
+                "src.downloader.client.yt_dlp.YoutubeDL",
+                side_effect=lambda opts: mock_ydl,
+            ),
+            pytest.raises(VideoUnavailableError),
+        ):
+            await downloader.fetch_metadata(_make_parsed_single())
+
+    async def test_fetch_metadata_transient_error_raises_generic(
+        self, tmp_path: Path
+    ) -> None:
+        """Transient extractor/network errors raise generic DownloadError only.
+
+        Metadata fetches commonly fail on proxy/rate-limit hiccups that
+        should not be reported as "video unavailable" to the user.
         """
         import yt_dlp
 
@@ -1466,7 +1490,9 @@ class TestFetchMetadata:
         mock_ydl = MagicMock()
         mock_ydl.__enter__ = MagicMock(return_value=mock_ydl)
         mock_ydl.__exit__ = MagicMock(return_value=False)
-        mock_ydl.extract_info.side_effect = yt_dlp.utils.DownloadError("Video removed")
+        mock_ydl.extract_info.side_effect = yt_dlp.utils.ExtractorError(
+            "HTTP Error 429: Too Many Requests"
+        )
 
         with (
             patch(
@@ -1477,7 +1503,6 @@ class TestFetchMetadata:
         ):
             await downloader.fetch_metadata(_make_parsed_single())
 
-        # Must NOT be the narrower VideoUnavailableError subclass.
         assert not isinstance(excinfo.value, VideoUnavailableError)
 
     async def test_fetch_metadata_passes_proxy_and_cookies(

@@ -123,6 +123,44 @@ async def _run_blocking[**P, T](
     return await asyncio.to_thread(func, *args, **kwargs)
 
 
+# Phrase markers that yt-dlp emits when a video is genuinely unavailable
+# (as opposed to transient proxy/network/rate-limit failures). Matching is
+# case-insensitive and substring-based — yt-dlp's wording drifts across
+# versions, so we look for stable keywords rather than exact messages.
+_UNAVAILABLE_MARKERS = (
+    "video unavailable",
+    "unavailable",
+    "private video",
+    "this video is private",
+    "has been removed",
+    "video has been removed",
+    "removed by the uploader",
+    "age-restricted",
+    "age restricted",
+    "sign in to confirm your age",
+    "confirm your age",
+    "not available in your country",
+    "not available in your region",
+    "geo-restricted",
+    "geo restricted",
+    "this video is no longer available",
+    "video is no longer available",
+    "account has been terminated",
+    "account associated with this video has been terminated",
+    "copyright",
+    "this video is not available",
+)
+
+
+def _is_unavailable_error(message: str) -> bool:
+    """Return True when the yt-dlp error message clearly indicates the
+    video is unavailable (private, removed, geo-blocked, age-gated, etc.)
+    rather than a transient extractor/network failure.
+    """
+    lower = message.lower()
+    return any(marker in lower for marker in _UNAVAILABLE_MARKERS)
+
+
 def _parse_chapters(info: dict[str, Any]) -> tuple[Chapter, ...] | None:
     """Extract and normalise the ``chapters`` field from a yt-dlp info dict.
 
@@ -274,12 +312,14 @@ class AudioDownloader:
     def _run_ydl_metadata(self, ydl_opts: dict[str, Any], url: str) -> dict[str, Any]:
         """Call yt-dlp synchronously with download=False; translate errors.
 
-        Unlike :meth:`_run_ydl`, we *don't* promote every yt-dlp error to
-        :class:`VideoUnavailableError` — a metadata fetch can also fail on
-        transient extractor/proxy/network hiccups, and telling the user
-        "video unavailable, private, age-restricted, or geo-blocked" in
-        those cases is misleading. Genuinely unavailable videos surface
-        via the same generic path (matches ``_run_ydl_flat``).
+        Error classification: yt-dlp reports both genuine unavailability
+        ("private video", "removed", "age-restricted", "geo-blocked") and
+        transient failures (proxy/network/rate-limit) through the same
+        exception types. We heuristically separate them via message
+        markers so the user gets an accurate message:
+
+        - Matching an unavailability marker → :class:`VideoUnavailableError`
+        - Everything else                     → :class:`DownloadError`
         """
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -290,9 +330,10 @@ class AudioDownloader:
             yt_dlp.utils.ExtractorError,
             yt_dlp.utils.UnsupportedError,
         ) as exc:
-            raise DownloadError(
-                self._sanitize_error(f"Failed to fetch metadata: {exc}")
-            ) from exc
+            message = self._sanitize_error(str(exc))
+            if _is_unavailable_error(str(exc)):
+                raise VideoUnavailableError(message) from exc
+            raise DownloadError(f"Failed to fetch metadata: {message}") from exc
         except asyncio.CancelledError:
             raise
         except Exception as exc:

@@ -430,6 +430,12 @@ async def handle_refresh(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                     "falling through to fresh download",
                     video_id,
                 )
+                # Reset any in-flight upload animation/state from the failed
+                # file_id attempt so _process_url starts with a clean slate
+                # (otherwise the UI shows upload-active while download runs).
+                await progress.stop_upload_animation()
+                await progress.set_step(Step.PROCESSING, StepStatus.PENDING)
+                await progress.set_step(Step.UPLOADING, StepStatus.PENDING)
                 await _process_url(
                     update, context, progress, parsed_url, force_redownload=True
                 )
