@@ -10,7 +10,13 @@ from telegram.ext import (
 )
 
 from src.bot.filters import MediaURLFilter
-from src.bot.handlers import handle_help, handle_start, handle_url
+from src.bot.handlers import (
+    handle_help,
+    handle_redownload,
+    handle_refresh,
+    handle_start,
+    handle_url,
+)
 from src.cache import CompositeCache, create_cache
 from src.cache.disk import cleanup_stale_tmp
 from src.config import Settings, get_settings
@@ -112,6 +118,8 @@ def build_application(settings: Settings) -> Application[Any, Any, Any, Any, Any
     # Register handlers
     app.add_handler(CommandHandler("start", handle_start))
     app.add_handler(CommandHandler("help", handle_help))
+    app.add_handler(CommandHandler("redownload", handle_redownload))
+    app.add_handler(CommandHandler("refresh", handle_refresh))
     app.add_handler(MessageHandler(MediaURLFilter(), handle_url))
 
     return app

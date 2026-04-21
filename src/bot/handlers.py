@@ -85,8 +85,59 @@ _HELP_TEXT = (
     "SoundCloud:\n"
     "• https://soundcloud.com/artist/track\n"
     "• https://soundcloud.com/artist/sets/playlist\n"
-    "• https://on.soundcloud.com/...\n"
+    "• https://on.soundcloud.com/...\n\n"
+    "Commands:\n"
+    "• /refresh <URL> — re-check chapters/metadata and resend "
+    "(useful when the author added timestamps after upload).\n"
+    "• /redownload <URL> — evict the cached copy and download again "
+    "from scratch.\n"
 )
+
+
+# ---------------------------------------------------------------------------
+# Shared access-control + rate-limit helpers
+# ---------------------------------------------------------------------------
+
+
+def _is_user_allowed(user_id: int, settings: Settings) -> bool:
+    """Return True if *user_id* is permitted (or the allow-list is empty)."""
+    allowed = settings.ALLOWED_USER_IDS
+    return not allowed or user_id in allowed
+
+
+async def _consume_rate_limit(user_id: int, settings: Settings) -> bool:
+    """Atomically check-and-record the per-user sliding-window rate limit.
+
+    Returns True when the request fits within the 60-second window (a slot
+    has been consumed); False when the user has exceeded their limit.
+    """
+    async with _rate_limit_lock:
+        global _rate_limit_request_count  # noqa: PLW0603
+        rate_limit: int = settings.RATE_LIMIT_PER_MINUTE
+        now = time.monotonic()
+        timestamps = _user_request_times.get(user_id, [])
+        recent = [t for t in timestamps if now - t < 60.0]
+        if len(recent) >= rate_limit:
+            if recent:
+                _user_request_times[user_id] = recent
+            else:
+                _user_request_times.pop(user_id, None)
+            return False
+        recent.append(now)
+        _user_request_times[user_id] = recent
+
+        # Periodic cleanup of stale entries to prevent unbounded growth
+        _rate_limit_request_count += 1
+        if _rate_limit_request_count >= _RATE_LIMIT_CLEANUP_INTERVAL:
+            _rate_limit_request_count = 0
+            stale_uids = [
+                uid
+                for uid, ts in _user_request_times.items()
+                if not any(now - t < 60.0 for t in ts)
+            ]
+            for uid in stale_uids:
+                del _user_request_times[uid]
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -124,8 +175,7 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     text: str = update.message.text or ""
 
     # --- Access control ---------------------------------------------------
-    allowed: list[int] = settings.ALLOWED_USER_IDS
-    if allowed and user_id not in allowed:
+    if not _is_user_allowed(user_id, settings):
         logger.warning("Rejected user %d (not in ALLOWED_USER_IDS)", user_id)
         return
 
@@ -137,36 +187,11 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     parsed_url = parsed_urls[0]
 
     # --- Rate limiting ----------------------------------------------------
-    async with _rate_limit_lock:
-        global _rate_limit_request_count  # noqa: PLW0603
-        rate_limit: int = settings.RATE_LIMIT_PER_MINUTE
-        now = time.monotonic()
-        timestamps = _user_request_times.get(user_id, [])
-        # Keep only timestamps within the last 60 seconds
-        recent = [t for t in timestamps if now - t < 60.0]
-        if len(recent) >= rate_limit:
-            if recent:
-                _user_request_times[user_id] = recent
-            else:
-                _user_request_times.pop(user_id, None)
-            await update.message.reply_text(
-                "You have reached the rate limit. Please wait a minute."
-            )
-            return
-        recent.append(now)
-        _user_request_times[user_id] = recent
-
-        # Periodic cleanup of stale entries to prevent unbounded growth
-        _rate_limit_request_count += 1
-        if _rate_limit_request_count >= _RATE_LIMIT_CLEANUP_INTERVAL:
-            _rate_limit_request_count = 0
-            stale_uids = [
-                uid
-                for uid, ts in _user_request_times.items()
-                if not any(now - t < 60.0 for t in ts)
-            ]
-            for uid in stale_uids:
-                del _user_request_times[uid]
+    if not await _consume_rate_limit(user_id, settings):
+        await update.message.reply_text(
+            "You have reached the rate limit. Please wait a minute."
+        )
+        return
 
     # --- Progress message -------------------------------------------------
     progress = ProgressManager(
@@ -186,13 +211,298 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             )
 
 
+# ---------------------------------------------------------------------------
+# /redownload command — evict cache then force a fresh download
+# ---------------------------------------------------------------------------
+
+
+_REDOWNLOAD_USAGE = (
+    "Usage: /redownload <YouTube or SoundCloud URL>\n"
+    "Evicts the cached copy (if any) and downloads again from scratch."
+)
+
+
+async def handle_redownload(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Force a full redownload, ignoring any existing cache entry.
+
+    Useful when the upstream audio has changed or when sidecar metadata
+    (chapters, file_id) needs a clean reset.
+    """
+    if update.effective_user is None or update.message is None:
+        return
+
+    settings: Settings = context.bot_data["settings"]
+    user_id: int = update.effective_user.id
+    text: str = update.message.text or ""
+
+    if not _is_user_allowed(user_id, settings):
+        logger.warning("Rejected user %d (not in ALLOWED_USER_IDS)", user_id)
+        return
+
+    parsed_urls = extract_media_urls(text)
+    if not parsed_urls:
+        await update.message.reply_text(_REDOWNLOAD_USAGE)
+        return
+
+    parsed_url = parsed_urls[0]
+
+    if not await _consume_rate_limit(user_id, settings):
+        await update.message.reply_text(
+            "You have reached the rate limit. Please wait a minute."
+        )
+        return
+
+    cache: CacheBackend = context.bot_data["cache"]
+
+    # Evict cached audio + file_id + chapters sidecar before redownloading so
+    # the fresh download lands on a clean slate. Skipped for playlists (they
+    # have no top-level cache key; per-track caches are replaced on re-put).
+    if parsed_url.video_id:
+        try:
+            await cache.evict(parsed_url.video_id)
+        except Exception:
+            # Non-fatal: a failing evict still lets the download overwrite the
+            # audio, at the cost of possibly-stale sidecars. The user's intent
+            # (fresh audio) is preserved; we don't want to block on a flaky S3.
+            logger.warning(
+                "Failed to evict cache for %s before redownload",
+                parsed_url.video_id,
+                exc_info=True,
+            )
+
+    progress = ProgressManager(
+        context.bot,
+        chat_id=update.message.chat_id,
+        reply_to_message_id=update.message.message_id,
+    )
+    await progress.create()
+
+    try:
+        await _process_url(update, context, progress, parsed_url, force_redownload=True)
+    except Exception:
+        logger.exception("Unexpected error in handle_redownload for user %d", user_id)
+        with contextlib.suppress(Exception):
+            await progress.set_step(
+                Step.UPLOADING, StepStatus.ERROR, "An unexpected error occurred"
+            )
+
+
+# ---------------------------------------------------------------------------
+# /refresh command — re-fetch chapters/metadata for a cached track, resend
+# ---------------------------------------------------------------------------
+
+
+_REFRESH_USAGE = (
+    "Usage: /refresh <YouTube or SoundCloud URL>\n"
+    "Re-checks chapters/metadata for a cached track and resends it.\n"
+    "Cache miss falls through to a full download."
+)
+
+
+async def handle_refresh(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Refresh cached metadata (chapters) and resend the audio.
+
+    - Cache miss: falls through to a normal download (same as handle_url).
+    - Cache hit: fetch_metadata only, update chapters if they changed, then
+      resend via file_id (fallback: re-upload from cache) with the fresh caption.
+    - Always resends on the hit path — the user asked for a refresh, so a
+      silent "nothing changed" would be confusing.
+    """
+    if update.effective_user is None or update.message is None:
+        return
+
+    settings: Settings = context.bot_data["settings"]
+    user_id: int = update.effective_user.id
+    text: str = update.message.text or ""
+
+    if not _is_user_allowed(user_id, settings):
+        logger.warning("Rejected user %d (not in ALLOWED_USER_IDS)", user_id)
+        return
+
+    parsed_urls = extract_media_urls(text)
+    if not parsed_urls:
+        await update.message.reply_text(_REFRESH_USAGE)
+        return
+
+    parsed_url = parsed_urls[0]
+
+    # Refresh is a per-video operation; playlist-level metadata has no
+    # cached chapters to refresh.
+    if parsed_url.url_type != URLType.SINGLE:
+        await update.message.reply_text(
+            "/refresh supports single videos only (not playlists or mixes)."
+        )
+        return
+
+    if not await _consume_rate_limit(user_id, settings):
+        await update.message.reply_text(
+            "You have reached the rate limit. Please wait a minute."
+        )
+        return
+
+    cache: CacheBackend = context.bot_data["cache"]
+    downloader: AudioDownloader = context.bot_data["downloader"]
+    video_id = parsed_url.video_id
+
+    progress = ProgressManager(
+        context.bot,
+        chat_id=update.message.chat_id,
+        reply_to_message_id=update.message.message_id,
+    )
+    await progress.create()
+
+    try:
+        # --- Cache miss → full download (no silent no-op) ----------------
+        # parsed_url.video_id is None for on.soundcloud.com short URLs; we
+        # can't key the cache without resolving the slug first. Falling
+        # through to a full download is suboptimal (it re-downloads audio
+        # that may already be cached under the resolved sc_slug) but still
+        # correct — the user gets the track they asked to refresh. Users who
+        # want the cheap metadata-only path should paste the canonical URL.
+        if not video_id or not await cache.exists(video_id):
+            await _process_url(update, context, progress, parsed_url)
+            return
+
+        # --- Cache hit → metadata-only refresh ---------------------------
+        await progress.set_step(
+            Step.DOWNLOADING, StepStatus.ACTIVE, "Fetching metadata…"
+        )
+        try:
+            metadata = await downloader.fetch_metadata(parsed_url)
+        except (VideoUnavailableError, DownloadError) as exc:
+            logger.info("Refresh metadata fetch failed for %s", video_id, exc_info=True)
+            await progress.set_step(Step.DOWNLOADING, StepStatus.ERROR)
+            await _edit_error(context.bot, progress, f"❌ {_user_facing_error(exc)}")
+            return
+
+        old_chapters = await cache.get_chapters(video_id)
+        old_norm = _normalize_chapters(old_chapters or ())
+
+        if metadata.chapters is None:
+            # Transient extractor miss — keep good data.
+            final_chapters = old_chapters
+        else:
+            new_norm = _normalize_chapters(metadata.chapters)
+            if new_norm != old_norm:
+                try:
+                    await cache.store_chapters(video_id, metadata.chapters)
+                except Exception:
+                    logger.warning(
+                        "Failed to store refreshed chapters for %s",
+                        video_id,
+                        exc_info=True,
+                    )
+                final_chapters = metadata.chapters
+            else:
+                final_chapters = old_chapters
+
+        await progress.set_step(Step.DOWNLOADING, StepStatus.DONE)
+
+        display_title = clean_title(metadata.title) or video_id
+        caption_result = _build_caption_result(display_title, final_chapters)
+
+        # --- Fast path: resend via Telegram file_id -----------------------
+        file_id = await cache.get_file_id(video_id)
+        sent_msg: Message | None = None
+        if file_id:
+            try:
+                await progress.set_step(Step.PROCESSING, StepStatus.DONE)
+                await progress.set_step(Step.UPLOADING, StepStatus.ACTIVE)
+                await progress.start_upload_animation()
+                sent_msg = await context.bot.send_audio(
+                    chat_id=update.message.chat_id,
+                    audio=file_id,
+                    caption=caption_result.caption,
+                    read_timeout=300,
+                    write_timeout=300,
+                )
+            except Exception:
+                logger.warning(
+                    "file_id resend failed for %s, falling back to upload",
+                    video_id,
+                )
+                sent_msg = None
+
+        # --- Fallback: re-upload from cached file -------------------------
+        if sent_msg is None:
+            cached_path: Path | None = await cache.get(video_id)
+            if cached_path is None:
+                # Stale cache: exists() said yes but the file is gone
+                # (S3 eviction, race, etc.). Recover by downloading fresh
+                # instead of surfacing an error — matches _process_url's
+                # behavior in the same state.
+                logger.warning(
+                    "Refresh: cache.exists()=True but cache.get()=None for %s — "
+                    "falling through to fresh download",
+                    video_id,
+                )
+                # Reset any in-flight upload animation/state from the failed
+                # file_id attempt so _process_url starts with a clean slate
+                # (otherwise the UI shows upload-active while download runs).
+                await progress.stop_upload_animation()
+                await progress.set_step(Step.PROCESSING, StepStatus.PENDING)
+                await progress.set_step(Step.UPLOADING, StepStatus.PENDING)
+                await _process_url(
+                    update, context, progress, parsed_url, force_redownload=True
+                )
+                return
+            cached_title, cached_artist = _extract_audio_metadata(cached_path)
+            result = DownloadResult(
+                file_path=cached_path,
+                video_id=video_id,
+                title=display_title or cached_title or video_id,
+                artist=cached_artist,
+                duration_seconds=None,
+                thumbnail_url=None,
+                file_size_bytes=cached_path.stat().st_size,
+                chapters=final_chapters,
+            )
+            sent_msg = await _send_audio(
+                context.bot, update.message.chat_id, result, progress
+            )
+            if sent_msg.audio:
+                try:
+                    await cache.store_file_id(video_id, sent_msg.audio.file_id)
+                except Exception:
+                    logger.warning(
+                        "Failed to store refreshed file_id for %s",
+                        video_id,
+                        exc_info=True,
+                    )
+        else:
+            # file_id path succeeded — chapter index reply still needed if overflow
+            if caption_result.index_messages:
+                await _send_chapter_index(
+                    context.bot,
+                    update.message.chat_id,
+                    sent_msg.message_id,
+                    caption_result.index_messages,
+                )
+
+        await progress.set_step(Step.UPLOADING, StepStatus.DONE)
+        await asyncio.sleep(2)
+        await progress.delete()
+    except Exception:
+        logger.exception("Unexpected error in handle_refresh for user %d", user_id)
+        with contextlib.suppress(Exception):
+            await progress.set_step(
+                Step.UPLOADING, StepStatus.ERROR, "An unexpected error occurred"
+            )
+
+
 async def _process_url(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
     progress: ProgressManager,
     parsed_url: ParsedURL,
+    force_redownload: bool = False,
 ) -> None:
-    """Inner orchestration: cache check → download → upload."""
+    """Inner orchestration: cache check → download → upload.
+
+    When force_redownload is True, the cache-hit short-circuit is skipped —
+    download always runs. Callers that pass True are expected to have already
+    evicted any cached entry so the fresh download cleanly replaces it.
+    """
     if update.message is None:
         return
 
@@ -202,7 +512,7 @@ async def _process_url(
     video_id = parsed_url.video_id  # None for playlists
 
     # --- Cache check (single videos only) --------------------------------
-    if video_id and await cache.exists(video_id):
+    if not force_redownload and video_id and await cache.exists(video_id):
         await progress.set_step(Step.DOWNLOADING, StepStatus.DONE, "Found in cache")
 
         # Try instant resend via Telegram file_id if available
