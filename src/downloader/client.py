@@ -129,25 +129,21 @@ async def _run_blocking[**P, T](
 # versions, so we look for stable keywords rather than exact messages.
 _UNAVAILABLE_MARKERS = (
     "video unavailable",
-    "unavailable",
     "private video",
     "this video is private",
     "has been removed",
-    "video has been removed",
     "removed by the uploader",
     "age-restricted",
     "age restricted",
     "sign in to confirm your age",
-    "confirm your age",
     "not available in your country",
     "not available in your region",
     "geo-restricted",
     "geo restricted",
-    "this video is no longer available",
-    "video is no longer available",
+    "no longer available",
     "account has been terminated",
-    "account associated with this video has been terminated",
-    "copyright",
+    "copyright grounds",
+    "copyright claim",
     "this video is not available",
 )
 
