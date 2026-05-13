@@ -20,6 +20,7 @@ quote() {
 
 ssh "$target_alias" "mkdir -p $(quote "$app_dir")/scripts $(quote "$app_dir")/cache"
 scp docker-compose.yml "$target_alias:$(quote "$app_dir")/docker-compose.yml"
+scp .env.example "$target_alias:$(quote "$app_dir")/.env.example"
 scp scripts/smoke_test.py "$target_alias:$(quote "$app_dir")/scripts/smoke_test.py"
 
 if [[ -n "${GHCR_TOKEN:-}" ]]; then
