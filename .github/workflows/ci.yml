@@ -108,7 +108,7 @@ jobs:
 
   deploy:
     name: Deploy to VPS
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, tg-audio-dl]
     # always() prevents GitHub from skipping deploy when build was skipped (workflow_dispatch path)
     if: |
       always() && (
@@ -134,54 +134,10 @@ jobs:
           echo "REPO_OWNER_LC=${OWNER}" >> $GITHUB_ENV
           echo "IMAGE_TAG=${IMAGE_TAG}" >> $GITHUB_ENV
 
-      - name: Copy compose file and scripts to server
-        uses: appleboy/scp-action@917f8b81dfc1ccd331fef9e2d61bdc6c8be94634 # v0.1.7
-        with:
-          host: ${{ secrets.DEPLOY_HOST }}
-          port: ${{ secrets.DEPLOY_PORT }}
-          username: ${{ secrets.DEPLOY_USER }}
-          key: ${{ secrets.DEPLOY_SSH_KEY }}
-          source: "docker-compose.yml,scripts/smoke_test.py"
-          target: ~/youtube-download-bot/
-
-      - name: Deploy
-        uses: appleboy/ssh-action@029f5b4aeeeb58fdfe1410a5d17f967dacf36262 # v1.0.3
+      - name: Deploy from runner
         env:
           GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
           REPO_OWNER: ${{ env.REPO_OWNER_LC }}
           GHCR_IMAGE: ${{ env.IMAGE_TAG }}
-        with:
-          host: ${{ secrets.DEPLOY_HOST }}
-          port: ${{ secrets.DEPLOY_PORT }}
-          username: ${{ secrets.DEPLOY_USER }}
-          key: ${{ secrets.DEPLOY_SSH_KEY }}
-          envs: GHCR_TOKEN,REPO_OWNER,GHCR_IMAGE
-          script: |
-            set -e
-            cd ~/youtube-download-bot
-
-            # Authenticate to pull private image
-            echo "$GHCR_TOKEN" | docker login ghcr.io -u "$REPO_OWNER" --password-stdin
-
-            # Persist image tag in .env so it survives reboots and manual restarts
-            sed -i "s|^GHCR_IMAGE=.*|GHCR_IMAGE=${GHCR_IMAGE}|" .env
-            grep -q '^GHCR_IMAGE=' .env || echo "GHCR_IMAGE=${GHCR_IMAGE}" >> .env
-
-            # Pull new bot image only (telegram-bot-api uses a pinned public image)
-            docker compose pull bot
-
-            # Restart bot with zero-downtime (api keeps running)
-            docker compose up -d --force-recreate bot
-
-            # Remove all unused images (old tagged versions + dangling) to prevent disk exhaustion
-            docker image prune -af
-
-      - name: Smoke test deployed container
-        uses: appleboy/ssh-action@029f5b4aeeeb58fdfe1410a5d17f967dacf36262 # v1.0.3
-        with:
-          host: ${{ secrets.DEPLOY_HOST }}
-          port: ${{ secrets.DEPLOY_PORT }}
-          username: ${{ secrets.DEPLOY_USER }}
-          key: ${{ secrets.DEPLOY_SSH_KEY }}
-          script: |
-            docker exec -i youtube-download-bot-bot-1 python3 - < ~/youtube-download-bot/scripts/smoke_test.py
+          DEPLOY_SSH_ALIAS: tg-audio-dl-vprojects
+        run: scripts/deploy.sh
