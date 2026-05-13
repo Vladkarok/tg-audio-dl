@@ -376,6 +376,24 @@ class TestProxyUrlValidation:
         assert s.PROXY_URL is None
 
 
+class TestCookiesFileValidation:
+    def test_cookies_file_empty_string_becomes_none(self, monkeypatch):
+        monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123:ABC")
+        monkeypatch.setenv("COOKIES_FILE", "")
+        from src.config import Settings
+
+        s = Settings()
+        assert s.COOKIES_FILE is None
+
+    def test_cookies_file_path_is_preserved(self, monkeypatch):
+        monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123:ABC")
+        monkeypatch.setenv("COOKIES_FILE", "/app/cookies.txt")
+        from src.config import Settings
+
+        s = Settings()
+        assert s.COOKIES_FILE == "/app/cookies.txt"
+
+
 # ---------------------------------------------------------------------------
 # Numeric field validators
 # ---------------------------------------------------------------------------
