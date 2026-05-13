@@ -114,10 +114,11 @@ jobs:
       always() && (
         (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && needs.build.result == 'success') ||
         github.event_name == 'workflow_dispatch'
-      )
+    )
     needs: [build]
     permissions:
       contents: read
+      packages: read
 
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -136,7 +137,7 @@ jobs:
 
       - name: Deploy from runner
         env:
-          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+          GHCR_TOKEN: ${{ github.token }}
           REPO_OWNER: ${{ env.REPO_OWNER_LC }}
           GHCR_IMAGE: ${{ env.IMAGE_TAG }}
           DEPLOY_SSH_ALIAS: tg-audio-dl-vprojects

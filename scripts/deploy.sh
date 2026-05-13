@@ -22,14 +22,20 @@ ssh "$target_alias" "mkdir -p $(quote "$app_dir")/scripts $(quote "$app_dir")/ca
 scp docker-compose.yml "$target_alias:$(quote "$app_dir")/docker-compose.yml"
 scp scripts/smoke_test.py "$target_alias:$(quote "$app_dir")/scripts/smoke_test.py"
 
+if [[ -n "${GHCR_TOKEN:-}" ]]; then
+  printf "%s" "$GHCR_TOKEN" | ssh "$target_alias" \
+    "umask 077; cat > $(quote "$app_dir")/.ghcr-token"
+fi
+
 ssh "$target_alias" \
-  "APP_DIR=$(quote "$app_dir") GHCR_TOKEN=$(quote "${GHCR_TOKEN:-}") REPO_OWNER=$(quote "$REPO_OWNER") GHCR_IMAGE=$(quote "$GHCR_IMAGE") bash -s" <<'REMOTE'
+  "APP_DIR=$(quote "$app_dir") REPO_OWNER=$(quote "$REPO_OWNER") GHCR_IMAGE=$(quote "$GHCR_IMAGE") bash -s" <<'REMOTE'
 set -euo pipefail
 
 cd "$APP_DIR"
+trap 'rm -f .ghcr-token' EXIT
 
-if [[ -n "$GHCR_TOKEN" ]]; then
-  echo "$GHCR_TOKEN" | docker login ghcr.io -u "$REPO_OWNER" --password-stdin
+if [[ -s .ghcr-token ]]; then
+  docker login ghcr.io -u "$REPO_OWNER" --password-stdin < .ghcr-token
 fi
 
 sed -i "s|^GHCR_IMAGE=.*|GHCR_IMAGE=${GHCR_IMAGE}|" .env
