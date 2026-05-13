@@ -61,26 +61,36 @@ ssh your-server "chmod 600 ~/youtube-download-bot/.env"
 gh repo create youtube-download-bot --private --source=. --push
 ```
 
-### 2. Add GitHub Secrets
+### 2. Register the self-hosted runner
 
-Go to **Settings → Secrets and variables → Actions** and add:
+The deploy job runs on the repo-specific self-hosted runner labels:
 
-| Secret name | Value |
-|---|---|
-| `DEPLOY_SSH_KEY` | Contents of `~/.ssh/deploy_youtube_bot` (private key) |
-| `DEPLOY_HOST` | Your VPS IP address |
-| `DEPLOY_PORT` | Your VPS SSH port |
-| `DEPLOY_USER` | Your VPS SSH username |
-| `GHCR_TOKEN` | GitHub PAT with **`read:packages`** scope |
-
-To get the private key value:
-```bash
-cat ~/.ssh/deploy_youtube_bot
+```yaml
+runs-on: [self-hosted, Linux, X64, tg-audio-dl]
 ```
 
-To create the PAT: go to **GitHub → Settings → Developer settings → Personal access tokens → Tokens (classic)** → generate a new token with only the **`read:packages`** scope selected.
+On the runner host, configure an SSH alias named `tg-audio-dl-vprojects`:
 
-> **Note:** Fine-grained PATs do not support GitHub Container Registry (GHCR). You must use a classic PAT.
+```sshconfig
+Host tg-audio-dl-vprojects
+    HostName 10.0.88.3
+    User vladkarok
+    IdentityFile ~/.ssh/tg_audio_dl_vprojects_deploy
+    IdentitiesOnly yes
+    StrictHostKeyChecking yes
+```
+
+The deployment workflow uses that alias directly from the runner. No deployment
+host/user/key GitHub secrets are required.
+
+Verify from the runner:
+
+```bash
+ssh tg-audio-dl-vprojects "hostname && cd ~/youtube-download-bot && docker compose config --services"
+```
+
+GHCR pulls use GitHub Actions' short-lived `github.token` with `packages: read`;
+no long-lived GHCR PAT is needed for deploy.
 
 ---
 
