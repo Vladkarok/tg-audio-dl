@@ -10,6 +10,7 @@ import src.bot.handlers as handlers_module
 from src.bot.handlers import (
     _RATE_LIMIT_CLEANUP_INTERVAL,
     _build_caption_result,
+    _build_chapter_pages,
     _format_timestamp,
     _normalize_chapters,
     _user_request_times,
@@ -1364,6 +1365,30 @@ class TestHandleRefresh:
 
 
 class TestHandleChapters:
+    def test_chapter_pages_use_dash_after_timestamp(self):
+        pages = _build_chapter_pages(((0, "Intro"), (65, "Main part")))
+
+        assert pages
+        assert "0:00 - Intro" in pages[0].caption
+        assert "1:05 - Main part" in pages[0].caption
+
+    def test_chapter_pages_keep_entries_atomic(self):
+        long_name = "A" * 955
+        pages = _build_chapter_pages(((0, long_name), (60, "Next")))
+
+        assert len(pages) == 2
+        assert long_name in pages[0].caption
+        assert "1:00 - Next" in pages[1].caption
+        assert long_name not in pages[1].caption
+        assert all(len(page.caption) <= handlers_module._CAPTION_MAX for page in pages)
+
+    def test_chapter_pages_reject_single_entry_that_cannot_fit(self):
+        too_long_name = "A" * 970
+
+        pages = _build_chapter_pages(((0, too_long_name),))
+
+        assert pages == ()
+
     async def test_chapters_disabled_replies_without_work(self):
         update = make_update(text="/chapters https://youtu.be/dQw4w9WgXcQ")
         downloader = MagicMock()

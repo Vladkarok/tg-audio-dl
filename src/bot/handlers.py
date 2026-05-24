@@ -1086,7 +1086,7 @@ def _build_chapter_pages(chapters: tuple[Chapter, ...]) -> tuple[ChapterPage, ..
         return ()
 
     entries = [
-        (index, f"{_format_timestamp(start)} {name}")
+        (index, f"{_format_timestamp(start)} - {name}")
         for index, (start, name) in enumerate(normalized, start=1)
     ]
 
