@@ -27,6 +27,7 @@ from telegram import (
     Message,
     Update,
 )
+from telegram.error import BadRequest
 from telegram.ext import ContextTypes
 
 from src.bot.progress import ProgressManager, Step, StepStatus
@@ -76,6 +77,7 @@ _user_request_times: dict[int, list[float]] = {}
 _rate_limit_lock = asyncio.Lock()
 _rate_limit_request_count: int = 0
 _RATE_LIMIT_CLEANUP_INTERVAL: int = 20
+_chapter_page_edit_locks: dict[tuple[int, int], asyncio.Lock] = {}
 
 _WELCOME_TEXT = (
     "👋 Welcome! Send me a YouTube video or playlist URL and I will download "
@@ -672,26 +674,58 @@ async def handle_chapter_page_callback(
         return
     video_id, page_index = parsed
 
-    cache: CacheBackend = context.bot_data["cache"]
-    chapters = await cache.get_chapters(video_id)
-    title = (
-        _extract_chapter_page_title(getattr(query.message, "caption", None)) or video_id
-    )
-    pages = _build_chapter_pages(title, chapters) if chapters else ()
-    if not pages or page_index >= len(pages):
-        await query.answer("Chapter pages expired.", show_alert=True)
-        return
+    message_key = _chapter_page_message_key(query.message)
+    edit_lock = None
+    if message_key is not None:
+        edit_lock = _chapter_page_edit_locks.setdefault(message_key, asyncio.Lock())
+        if edit_lock.locked():
+            await query.answer()
+            return
+        await edit_lock.acquire()
 
-    markup = _build_chapter_pages_markup(video_id, pages)
-    if len(pages) > 1 and markup is None:
-        await query.answer("Chapter pages unavailable.", show_alert=True)
-        return
+    try:
+        await query.answer()
 
-    await query.edit_message_caption(
-        caption=pages[page_index].caption,
-        reply_markup=markup,
-    )
-    await query.answer()
+        cache: CacheBackend = context.bot_data["cache"]
+        chapters = await cache.get_chapters(video_id)
+        title = (
+            _extract_chapter_page_title(getattr(query.message, "caption", None))
+            or video_id
+        )
+        pages = _build_chapter_pages(title, chapters) if chapters else ()
+        if not pages or page_index >= len(pages):
+            return
+
+        markup = _build_chapter_pages_markup(video_id, pages)
+        if len(pages) > 1 and markup is None:
+            return
+
+        try:
+            await query.edit_message_caption(
+                caption=pages[page_index].caption,
+                reply_markup=markup,
+            )
+        except BadRequest as exc:
+            if "message is not modified" not in str(exc).lower():
+                raise
+    finally:
+        if edit_lock is not None and message_key is not None:
+            edit_lock.release()
+            if _chapter_page_edit_locks.get(message_key) is edit_lock:
+                _chapter_page_edit_locks.pop(message_key, None)
+
+
+def _chapter_page_message_key(message: object | None) -> tuple[int, int] | None:
+    if message is None:
+        return None
+    chat_id = getattr(message, "chat_id", None)
+    if not isinstance(chat_id, int):
+        chat = getattr(message, "chat", None)
+        chat_id = getattr(chat, "id", None)
+    message_id = getattr(message, "message_id", None)
+    if not isinstance(chat_id, int) or not isinstance(message_id, int):
+        return None
+    return chat_id, message_id
 
 
 async def _process_url(

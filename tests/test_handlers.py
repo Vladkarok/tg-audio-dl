@@ -1,10 +1,12 @@
 """Tests for src/bot/handlers.py — written first (TDD RED phase)."""
 
+import asyncio
 import time
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, mock_open, patch
 
 import pytest
+from telegram.error import BadRequest
 
 import src.bot.handlers as handlers_module
 from src.bot.handlers import (
@@ -113,8 +115,10 @@ def make_context(
 def clear_rate_limit_state():
     """Reset the in-memory rate-limit dict before every test."""
     _user_request_times.clear()
+    handlers_module._chapter_page_edit_locks.clear()
     yield
     _user_request_times.clear()
+    handlers_module._chapter_page_edit_locks.clear()
 
 
 class TestStartHandler:
@@ -1529,6 +1533,92 @@ class TestHandleChapterPageCallback:
         assert kwargs["caption"].startswith("🎵 Full Track Title\n2/")
         assert kwargs["reply_markup"] is not None
         query.answer.assert_called_once()
+
+    async def test_callback_answers_before_editing_caption(self):
+        chapters = tuple((i * 60, f"Chapter {i}") for i in range(80))
+
+        update = MagicMock()
+        update.effective_user = MagicMock(id=12345)
+        query = MagicMock()
+        query.data = "cp:dQw4w9WgXcQ:1"
+        query.answer = AsyncMock()
+        query.message = MagicMock(
+            chat_id=999,
+            message_id=42,
+            caption="🎵 Full Track Title\n1/2 · 01-60\n0:00 - Intro",
+        )
+
+        async def edit_caption(**_kwargs):
+            assert query.answer.await_count == 1
+
+        query.edit_message_caption = AsyncMock(side_effect=edit_caption)
+        update.callback_query = query
+
+        cache = MagicMock()
+        cache.get_chapters = AsyncMock(return_value=chapters)
+        context = make_context(cache=cache)
+        context.bot_data["settings"].EXPERIMENTAL_CHAPTER_PAGES_ENABLED = True
+
+        await handle_chapter_page_callback(update, context)
+
+        query.answer.assert_called_once()
+        query.edit_message_caption.assert_called_once()
+        assert handlers_module._chapter_page_edit_locks == {}
+
+    async def test_callback_drops_click_when_message_edit_in_flight(self):
+        update = MagicMock()
+        update.effective_user = MagicMock(id=12345)
+        query = MagicMock()
+        query.data = "cp:dQw4w9WgXcQ:1"
+        query.answer = AsyncMock()
+        query.edit_message_caption = AsyncMock()
+        query.message = MagicMock(chat_id=999, message_id=42)
+        update.callback_query = query
+
+        lock = asyncio.Lock()
+        await lock.acquire()
+        handlers_module._chapter_page_edit_locks[(999, 42)] = lock
+
+        cache = MagicMock()
+        cache.get_chapters = AsyncMock()
+        context = make_context(cache=cache)
+        context.bot_data["settings"].EXPERIMENTAL_CHAPTER_PAGES_ENABLED = True
+
+        await handle_chapter_page_callback(update, context)
+
+        query.answer.assert_called_once()
+        query.edit_message_caption.assert_not_called()
+        cache.get_chapters.assert_not_called()
+        lock.release()
+
+    async def test_callback_ignores_message_not_modified(self):
+        chapters = tuple((i * 60, f"Chapter {i}") for i in range(80))
+
+        update = MagicMock()
+        update.effective_user = MagicMock(id=12345)
+        query = MagicMock()
+        query.data = "cp:dQw4w9WgXcQ:1"
+        query.answer = AsyncMock()
+        query.edit_message_caption = AsyncMock(
+            side_effect=BadRequest("Message is not modified")
+        )
+        query.message = MagicMock(
+            chat_id=999,
+            message_id=42,
+            caption="🎵 Full Track Title\n1/2 · 01-60\n0:00 - Intro",
+        )
+        update.callback_query = query
+
+        cache = MagicMock()
+        cache.get_chapters = AsyncMock(return_value=chapters)
+        context = make_context(cache=cache)
+        context.bot_data["settings"].EXPERIMENTAL_CHAPTER_PAGES_ENABLED = True
+
+        await handle_chapter_page_callback(update, context)
+
+        query.answer.assert_called_once()
+        query.edit_message_caption.assert_called_once()
+        assert handlers_module._chapter_page_edit_locks == {}
 
 
 # ---------------------------------------------------------------------------
