@@ -44,6 +44,7 @@ git tag v1.2.3 && git push origin v1.2.3
 | `ALLOWED_USER_IDS` | `[]` | Allowlist (empty = public); comma-separated or JSON array |
 | `RATE_LIMIT_PER_MINUTE` | `5` | Requests per user per minute |
 | `PLAYLIST_MAX_TRACKS` | `50` | Max tracks from a playlist |
+| `EXPERIMENTAL_CHAPTER_PAGES_ENABLED` | `false` | Enable `/chapters <URL>` paginated caption experiment for cached single tracks |
 | `LOG_LEVEL` | `INFO` | Logging level (DEBUG/INFO/WARNING/ERROR/CRITICAL) |
 | `PROXY_URL` | `None` | SOCKS5/HTTP proxy for yt-dlp (required on datacenter IPs); see [DEPLOY.md](DEPLOY.md) |
 | `S3_ENABLED` | `false` | Enable S3 secondary cache |

@@ -19,7 +19,14 @@ from pathlib import Path
 
 import mutagen
 from PIL import Image
-from telegram import Bot, InputFile, Message, Update
+from telegram import (
+    Bot,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    InputFile,
+    Message,
+    Update,
+)
 from telegram.ext import ContextTypes
 
 from src.bot.progress import ProgressManager, Step, StepStatus
@@ -91,6 +98,8 @@ _HELP_TEXT = (
     "(useful when the author added timestamps after upload).\n"
     "• /redownload <URL> — evict the cached copy and download again "
     "from scratch.\n"
+    "• /chapters <URL> — experimental paginated chapter captions "
+    "(when enabled).\n"
 )
 
 
@@ -364,14 +373,18 @@ async def handle_refresh(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             return
 
         # --- Cache hit → metadata-only refresh ---------------------------
+        # The audio file is already cached; only upstream metadata is fetched.
+        # Keep this out of the DOWNLOADING step so the progress UI does not
+        # imply that the audio is being downloaded again.
+        await progress.set_step(Step.DOWNLOADING, StepStatus.DONE, "Found in cache")
         await progress.set_step(
-            Step.DOWNLOADING, StepStatus.ACTIVE, "Fetching metadata…"
+            Step.PROCESSING, StepStatus.ACTIVE, "Fetching metadata…"
         )
         try:
             metadata = await downloader.fetch_metadata(parsed_url)
         except (VideoUnavailableError, DownloadError) as exc:
             logger.info("Refresh metadata fetch failed for %s", video_id, exc_info=True)
-            await progress.set_step(Step.DOWNLOADING, StepStatus.ERROR)
+            await progress.set_step(Step.PROCESSING, StepStatus.ERROR)
             await _edit_error(context.bot, progress, f"❌ {_user_facing_error(exc)}")
             return
 
@@ -396,7 +409,7 @@ async def handle_refresh(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             else:
                 final_chapters = old_chapters
 
-        await progress.set_step(Step.DOWNLOADING, StepStatus.DONE)
+        await progress.set_step(Step.PROCESSING, StepStatus.DONE)
 
         display_title = clean_title(metadata.title) or video_id
         caption_result = _build_caption_result(display_title, final_chapters)
@@ -488,6 +501,189 @@ async def handle_refresh(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             await progress.set_step(
                 Step.UPLOADING, StepStatus.ERROR, "An unexpected error occurred"
             )
+
+
+_CHAPTERS_USAGE = (
+    "Usage: /chapters <YouTube or SoundCloud URL>\n"
+    "Experimental paginated chapter captions. Works only for cached single tracks."
+)
+
+
+async def handle_chapters(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Send cached audio with experimental paginated chapter captions.
+
+    This is intentionally cache-only: the command may fetch metadata, but it
+    never downloads audio from the source. Normal URL handling remains the
+    stable path.
+    """
+    if update.effective_user is None or update.message is None:
+        return
+
+    settings: Settings = context.bot_data["settings"]
+    if not settings.EXPERIMENTAL_CHAPTER_PAGES_ENABLED:
+        await update.message.reply_text("Experimental chapter pages are disabled.")
+        return
+
+    user_id = update.effective_user.id
+    if not _is_user_allowed(user_id, settings):
+        logger.warning("Rejected user %d (not in ALLOWED_USER_IDS)", user_id)
+        return
+
+    parsed_urls = extract_media_urls(update.message.text or "")
+    if not parsed_urls:
+        await update.message.reply_text(_CHAPTERS_USAGE)
+        return
+
+    parsed_url = parsed_urls[0]
+    if parsed_url.url_type != URLType.SINGLE or not parsed_url.video_id:
+        await update.message.reply_text("/chapters supports cached single tracks only.")
+        return
+
+    if not await _consume_rate_limit(user_id, settings):
+        await update.message.reply_text(
+            "You have reached the rate limit. Please wait a minute."
+        )
+        return
+
+    cache: CacheBackend = context.bot_data["cache"]
+    downloader: AudioDownloader = context.bot_data["downloader"]
+    video_id = parsed_url.video_id
+
+    if not await cache.exists(video_id):
+        await update.message.reply_text(
+            "This track is not cached yet. Send the URL normally first."
+        )
+        return
+
+    chapters = await cache.get_chapters(video_id)
+    display_title = video_id
+    if not chapters:
+        status = await update.message.reply_text("Fetching chapter metadata...")
+        try:
+            metadata = await downloader.fetch_metadata(parsed_url)
+        except (VideoUnavailableError, DownloadError) as exc:
+            await status.edit_text(f"❌ {_user_facing_error(exc)}")
+            return
+        display_title = clean_title(metadata.title) or video_id
+        chapters = metadata.chapters
+        if chapters:
+            try:
+                await cache.store_chapters(video_id, chapters)
+            except Exception:
+                logger.warning(
+                    "Failed to store chapters for %s from /chapters",
+                    video_id,
+                    exc_info=True,
+                )
+        with contextlib.suppress(Exception):
+            await status.delete()
+
+    if not chapters:
+        await update.message.reply_text("No chapters found for this track.")
+        return
+
+    pages = _build_chapter_pages(chapters)
+    if not pages:
+        await update.message.reply_text(
+            "Chapter titles are too long for paginated captions."
+        )
+        return
+
+    markup = _build_chapter_pages_markup(video_id, pages)
+    if len(pages) > 1 and markup is None:
+        await update.message.reply_text(
+            "This cache key is too long for Telegram callback buttons."
+        )
+        return
+
+    file_id = await cache.get_file_id(video_id)
+    if file_id:
+        await context.bot.send_audio(
+            chat_id=update.message.chat_id,
+            audio=file_id,
+            caption=pages[0].caption,
+            reply_markup=markup,
+            read_timeout=300,
+            write_timeout=300,
+        )
+        return
+
+    cached_path = await cache.get(video_id)
+    if cached_path is None:
+        await update.message.reply_text("Cached audio file is missing.")
+        return
+
+    cached_title, cached_artist = _extract_audio_metadata(cached_path)
+    if display_title == video_id and cached_title:
+        display_title = clean_title(cached_title) or video_id
+    safe_filename = sanitize_filename(display_title) or video_id
+    thumbnail = _extract_thumbnail(cached_path)
+    with cached_path.open("rb") as audio_file:
+        msg = await context.bot.send_audio(
+            chat_id=update.message.chat_id,
+            audio=audio_file,
+            thumbnail=thumbnail,
+            title=display_title,
+            performer=cached_artist,
+            caption=pages[0].caption,
+            reply_markup=markup,
+            filename=f"{safe_filename}{cached_path.suffix}",
+            read_timeout=300,
+            write_timeout=300,
+        )
+    if msg.audio:
+        try:
+            await cache.store_file_id(video_id, msg.audio.file_id)
+        except Exception:
+            logger.warning(
+                "Failed to store file_id for %s from /chapters",
+                video_id,
+                exc_info=True,
+            )
+
+
+async def handle_chapter_page_callback(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """Handle inline buttons for experimental chapter caption pages."""
+    query = update.callback_query
+    if query is None:
+        return
+
+    settings: Settings = context.bot_data["settings"]
+    if not settings.EXPERIMENTAL_CHAPTER_PAGES_ENABLED:
+        await query.answer("Experimental chapter pages are disabled.", show_alert=True)
+        return
+
+    if update.effective_user is not None and not _is_user_allowed(
+        update.effective_user.id, settings
+    ):
+        await query.answer("Not allowed.", show_alert=True)
+        return
+
+    parsed = _parse_chapter_page_callback_data(query.data or "")
+    if parsed is None:
+        await query.answer("Invalid chapter page.", show_alert=True)
+        return
+    video_id, page_index = parsed
+
+    cache: CacheBackend = context.bot_data["cache"]
+    chapters = await cache.get_chapters(video_id)
+    pages = _build_chapter_pages(chapters) if chapters else ()
+    if not pages or page_index >= len(pages):
+        await query.answer("Chapter pages expired.", show_alert=True)
+        return
+
+    markup = _build_chapter_pages_markup(video_id, pages)
+    if len(pages) > 1 and markup is None:
+        await query.answer("Chapter pages unavailable.", show_alert=True)
+        return
+
+    await query.edit_message_caption(
+        caption=pages[page_index].caption,
+        reply_markup=markup,
+    )
+    await query.answer()
 
 
 async def _process_url(
@@ -719,6 +915,14 @@ class CaptionResult:
     index_messages: tuple[str, ...] = field(default_factory=tuple)
 
 
+@dataclass(frozen=True)
+class ChapterPage:
+    """One experimental caption page for chapter navigation."""
+
+    caption: str
+    label: str
+
+
 def _format_timestamp(seconds: int) -> str:
     """Format seconds as a compact Telegram media timestamp.
 
@@ -843,6 +1047,98 @@ def _build_caption_result(
     header = f"🎵 {title}\n\n📋 All chapters:"
     index = _build_index_messages(chapters, header=header, include_timestamps=True)
     return CaptionResult(caption=title_line[:_CAPTION_MAX], index_messages=index)
+
+
+_CHAPTER_PAGE_CALLBACK_PREFIX = "cp"
+_CHAPTER_PAGE_BODY_MAX = 970
+
+
+def _chapter_page_callback_data(video_id: str, page_index: int) -> str | None:
+    data = f"{_CHAPTER_PAGE_CALLBACK_PREFIX}:{video_id}:{page_index}"
+    # Bot API callback_data is 1-64 bytes, measured after UTF-8 encoding.
+    return data if len(data.encode()) <= 64 else None
+
+
+def _parse_chapter_page_callback_data(data: str) -> tuple[str, int] | None:
+    parts = data.split(":")
+    if len(parts) != 3 or parts[0] != _CHAPTER_PAGE_CALLBACK_PREFIX:
+        return None
+    video_id = parts[1]
+    try:
+        page_index = int(parts[2])
+    except ValueError:
+        return None
+    if page_index < 0:
+        return None
+    try:
+        from src.cache.base import validate_video_id
+
+        validate_video_id(video_id)
+    except ValueError:
+        return None
+    return video_id, page_index
+
+
+def _build_chapter_pages(chapters: tuple[Chapter, ...]) -> tuple[ChapterPage, ...]:
+    """Build compact, lossless chapter caption pages for inline navigation."""
+    normalized = _normalize_chapters(chapters)
+    if not normalized:
+        return ()
+
+    entries = [
+        (index, f"{_format_timestamp(start)} {name}")
+        for index, (start, name) in enumerate(normalized, start=1)
+    ]
+
+    raw_pages: list[tuple[int, int, list[str]]] = []
+    current_start = entries[0][0]
+    current_lines: list[str] = []
+    current_len = 0
+
+    for index, line in entries:
+        if len(line) > _CHAPTER_PAGE_BODY_MAX:
+            return ()
+        needed = len(line) if not current_lines else 1 + len(line)
+        if current_lines and current_len + needed > _CHAPTER_PAGE_BODY_MAX:
+            raw_pages.append((current_start, entries[index - 2][0], current_lines))
+            current_start = index
+            current_lines = [line]
+            current_len = len(line)
+        else:
+            current_lines.append(line)
+            current_len += needed
+
+    raw_pages.append((current_start, entries[-1][0], current_lines))
+
+    total = len(raw_pages)
+    pages: list[ChapterPage] = []
+    for page_number, (start, end, lines) in enumerate(raw_pages, start=1):
+        label = f"{start:02d}-{end:02d}"
+        caption = f"{page_number}/{total} · {label}\n" + "\n".join(lines)
+        if len(caption) > _CAPTION_MAX:
+            return ()
+        pages.append(ChapterPage(caption=caption, label=label))
+
+    return tuple(pages)
+
+
+def _build_chapter_pages_markup(
+    video_id: str,
+    pages: tuple[ChapterPage, ...],
+) -> InlineKeyboardMarkup | None:
+    """Build page buttons, returning None when callback data cannot fit."""
+    if len(pages) <= 1:
+        return None
+
+    buttons: list[InlineKeyboardButton] = []
+    for index, page in enumerate(pages):
+        data = _chapter_page_callback_data(video_id, index)
+        if data is None:
+            return None
+        buttons.append(InlineKeyboardButton(page.label, callback_data=data))
+
+    rows = [buttons[i : i + 5] for i in range(0, len(buttons), 5)]
+    return InlineKeyboardMarkup(rows)
 
 
 _THUMB_MAX_SIZE = 320  # Telegram max thumbnail dimension (px)

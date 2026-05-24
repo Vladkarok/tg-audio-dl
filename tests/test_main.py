@@ -69,7 +69,7 @@ def test_setup_logging_quiets_telegram():
 
 def test_build_application_registers_handlers():
     """build_application must register /start, /help, and URL message handlers."""
-    from telegram.ext import CommandHandler, MessageHandler
+    from telegram.ext import CallbackQueryHandler, CommandHandler, MessageHandler
 
     settings = make_settings()
 
@@ -92,17 +92,22 @@ def test_build_application_registers_handlers():
 
         build_application(settings)
 
-    # Verify the five handler groups were added
-    assert mock_app.add_handler.call_count == 5
+    # Verify handlers were added
+    assert mock_app.add_handler.call_count == 7
 
     added_handlers = [call.args[0] for call in mock_app.add_handler.call_args_list]
 
     command_handlers = [h for h in added_handlers if isinstance(h, CommandHandler)]
+    callback_handlers = [
+        h for h in added_handlers if isinstance(h, CallbackQueryHandler)
+    ]
     message_handlers = [h for h in added_handlers if isinstance(h, MessageHandler)]
 
-    assert len(command_handlers) == 4, (
-        "Expected exactly 4 CommandHandlers (/start, /help, /redownload, /refresh)"
+    assert len(command_handlers) == 5, (
+        "Expected exactly 5 CommandHandlers "
+        "(/start, /help, /redownload, /refresh, /chapters)"
     )
+    assert len(callback_handlers) == 1, "Expected chapter-page CallbackQueryHandler"
     assert len(message_handlers) == 1, "Expected exactly 1 MessageHandler (URL filter)"
 
     command_names = {name for h in command_handlers for name in h.commands}
@@ -110,6 +115,7 @@ def test_build_application_registers_handlers():
     assert "help" in command_names
     assert "redownload" in command_names
     assert "refresh" in command_names
+    assert "chapters" in command_names
 
 
 def test_build_application_stores_settings_in_bot_data():

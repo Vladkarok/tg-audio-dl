@@ -13,6 +13,8 @@ from src.bot.handlers import (
     _format_timestamp,
     _normalize_chapters,
     _user_request_times,
+    handle_chapter_page_callback,
+    handle_chapters,
     handle_help,
     handle_redownload,
     handle_refresh,
@@ -71,6 +73,7 @@ def make_context(
         settings.PLAYLIST_MAX_TRACKS = 50
         settings.MAX_FILE_SIZE_MB = 2000
         settings.RATE_LIMIT_PER_MINUTE = rate_limit
+        settings.EXPERIMENTAL_CHAPTER_PAGES_ENABLED = False
 
     if downloader is None:
         downloader = MagicMock()
@@ -1006,6 +1009,78 @@ class TestHandleRefresh:
         cache.store_chapters.assert_not_called()
         context.bot.send_audio.assert_called_once()
 
+    async def test_refresh_cached_metadata_progress_does_not_look_like_download(
+        self, tmp_path
+    ):
+        """Cached refresh shows metadata fetch as processing, not audio download."""
+        audio_file = tmp_path / "dQw4w9WgXcQ.m4a"
+        audio_file.write_bytes(b"audio")
+
+        update = make_update(text="/refresh https://youtu.be/dQw4w9WgXcQ")
+        cache = MagicMock()
+        cache.exists = AsyncMock(return_value=True)
+        cache.get = AsyncMock(return_value=audio_file)
+        cache.get_file_id = AsyncMock(return_value="AgACAg_cached_fid")
+        cache.store_file_id = AsyncMock()
+        cache.get_chapters = AsyncMock(return_value=None)
+        cache.store_chapters = AsyncMock()
+
+        downloader = MagicMock()
+        downloader.download = AsyncMock()
+        downloader.fetch_metadata = AsyncMock(
+            return_value=TrackMetadata(
+                video_id="dQw4w9WgXcQ",
+                title="Test",
+                chapters=((0, "Intro"),),
+            )
+        )
+
+        context = make_context(cache=cache, downloader=downloader)
+        context.bot.send_audio = AsyncMock(
+            return_value=MagicMock(audio=MagicMock(file_id="AgACAg_cached_fid"))
+        )
+
+        set_step_calls = []
+        original_set_step = None
+
+        async def capture_set_step(step, status, detail=""):
+            set_step_calls.append((step, status, detail))
+            await original_set_step(step, status, detail)
+
+        from src.bot.progress import ProgressManager, Step, StepStatus
+
+        original_create = ProgressManager.create
+
+        async def patched_create(self):
+            nonlocal original_set_step
+            original_set_step = self.set_step
+            self.set_step = lambda step, status, detail="": capture_set_step(
+                step, status, detail
+            )
+            return await original_create(self)
+
+        with (
+            patch.object(ProgressManager, "create", patched_create),
+            patch("asyncio.sleep", new_callable=AsyncMock),
+        ):
+            await handle_refresh(update, context)
+
+        assert (
+            Step.DOWNLOADING,
+            StepStatus.ACTIVE,
+            "Fetching metadata…",
+        ) not in set_step_calls
+        assert (
+            Step.DOWNLOADING,
+            StepStatus.DONE,
+            "Found in cache",
+        ) in set_step_calls
+        assert (
+            Step.PROCESSING,
+            StepStatus.ACTIVE,
+            "Fetching metadata…",
+        ) in set_step_calls
+
     async def test_refresh_cached_new_chapters_stored_and_resent(self, tmp_path):
         """Cached, new chapters: store_chapters called with new tuple; audio resent."""
         audio_file = tmp_path / "dQw4w9WgXcQ.m4a"
@@ -1281,6 +1356,140 @@ class TestHandleRefresh:
         )
         downloader.download.assert_called_once()
         context.bot.send_audio.assert_called()
+
+
+# ---------------------------------------------------------------------------
+# /chapters command — experimental paginated captions
+# ---------------------------------------------------------------------------
+
+
+class TestHandleChapters:
+    async def test_chapters_disabled_replies_without_work(self):
+        update = make_update(text="/chapters https://youtu.be/dQw4w9WgXcQ")
+        downloader = MagicMock()
+        downloader.fetch_metadata = AsyncMock()
+        downloader.download = AsyncMock()
+        context = make_context(downloader=downloader)
+
+        await handle_chapters(update, context)
+
+        update.message.reply_text.assert_called_once()
+        downloader.fetch_metadata.assert_not_called()
+        downloader.download.assert_not_called()
+        context.bot.send_audio.assert_not_called()
+
+    async def test_chapters_cache_miss_does_not_download(self):
+        update = make_update(text="/chapters https://youtu.be/dQw4w9WgXcQ")
+        cache = MagicMock()
+        cache.exists = AsyncMock(return_value=False)
+        downloader = MagicMock()
+        downloader.fetch_metadata = AsyncMock()
+        downloader.download = AsyncMock()
+        context = make_context(cache=cache, downloader=downloader)
+        context.bot_data["settings"].EXPERIMENTAL_CHAPTER_PAGES_ENABLED = True
+
+        await handle_chapters(update, context)
+
+        update.message.reply_text.assert_called_once()
+        downloader.fetch_metadata.assert_not_called()
+        downloader.download.assert_not_called()
+        context.bot.send_audio.assert_not_called()
+
+    async def test_chapters_cached_file_id_sends_paginated_caption(self):
+        chapters = tuple((i * 60, f"Chapter {i}") for i in range(80))
+
+        update = make_update(text="/chapters https://youtu.be/dQw4w9WgXcQ")
+        cache = MagicMock()
+        cache.exists = AsyncMock(return_value=True)
+        cache.get_chapters = AsyncMock(return_value=chapters)
+        cache.get_file_id = AsyncMock(return_value="AgACAg_cached_fid")
+        downloader = MagicMock()
+        downloader.fetch_metadata = AsyncMock()
+        downloader.download = AsyncMock()
+
+        context = make_context(cache=cache, downloader=downloader)
+        context.bot_data["settings"].EXPERIMENTAL_CHAPTER_PAGES_ENABLED = True
+        context.bot.send_audio = AsyncMock(
+            return_value=MagicMock(audio=MagicMock(file_id="AgACAg_cached_fid"))
+        )
+
+        await handle_chapters(update, context)
+
+        downloader.download.assert_not_called()
+        downloader.fetch_metadata.assert_not_called()
+        context.bot.send_audio.assert_called_once()
+        kwargs = context.bot.send_audio.call_args.kwargs
+        assert kwargs["audio"] == "AgACAg_cached_fid"
+        assert "1/" in kwargs["caption"]
+        assert kwargs["reply_markup"] is not None
+        buttons = [
+            button for row in kwargs["reply_markup"].inline_keyboard for button in row
+        ]
+        assert len(buttons) > 1
+        assert buttons[0].callback_data == "cp:dQw4w9WgXcQ:0"
+
+    async def test_chapters_cached_without_chapters_fetches_metadata_only(self):
+        new_chapters = ((0, "Intro"), (60, "Part 2"))
+
+        update = make_update(text="/chapters https://youtu.be/dQw4w9WgXcQ")
+        status = MagicMock()
+        status.edit_text = AsyncMock()
+        status.delete = AsyncMock()
+        update.message.reply_text = AsyncMock(return_value=status)
+
+        cache = MagicMock()
+        cache.exists = AsyncMock(return_value=True)
+        cache.get_chapters = AsyncMock(return_value=None)
+        cache.store_chapters = AsyncMock()
+        cache.get_file_id = AsyncMock(return_value="AgACAg_cached_fid")
+        downloader = MagicMock()
+        downloader.fetch_metadata = AsyncMock(
+            return_value=TrackMetadata(
+                video_id="dQw4w9WgXcQ",
+                title="Test",
+                chapters=new_chapters,
+            )
+        )
+        downloader.download = AsyncMock()
+
+        context = make_context(cache=cache, downloader=downloader)
+        context.bot_data["settings"].EXPERIMENTAL_CHAPTER_PAGES_ENABLED = True
+        context.bot.send_audio = AsyncMock(
+            return_value=MagicMock(audio=MagicMock(file_id="AgACAg_cached_fid"))
+        )
+
+        await handle_chapters(update, context)
+
+        downloader.fetch_metadata.assert_called_once()
+        downloader.download.assert_not_called()
+        cache.store_chapters.assert_called_once_with("dQw4w9WgXcQ", new_chapters)
+        context.bot.send_audio.assert_called_once()
+
+
+class TestHandleChapterPageCallback:
+    async def test_callback_edits_caption_from_cached_chapters(self):
+        chapters = tuple((i * 60, f"Chapter {i}") for i in range(80))
+
+        update = MagicMock()
+        update.effective_user = MagicMock(id=12345)
+        query = MagicMock()
+        query.data = "cp:dQw4w9WgXcQ:1"
+        query.answer = AsyncMock()
+        query.edit_message_caption = AsyncMock()
+        update.callback_query = query
+
+        cache = MagicMock()
+        cache.get_chapters = AsyncMock(return_value=chapters)
+        context = make_context(cache=cache)
+        context.bot_data["settings"].EXPERIMENTAL_CHAPTER_PAGES_ENABLED = True
+
+        await handle_chapter_page_callback(update, context)
+
+        query.edit_message_caption.assert_called_once()
+        kwargs = query.edit_message_caption.call_args.kwargs
+        assert kwargs["caption"].startswith("2/")
+        assert kwargs["reply_markup"] is not None
+        query.answer.assert_called_once()
 
 
 # ---------------------------------------------------------------------------

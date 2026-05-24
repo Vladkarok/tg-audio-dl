@@ -154,6 +154,13 @@ class TestConfigDefaults:
         settings = Settings()
         assert settings.AWS_SECRET_ACCESS_KEY is None
 
+    def test_experimental_chapter_pages_default_false(self):
+        """Experimental chapter pages should be opt-in."""
+        from src.config import Settings
+
+        settings = Settings()
+        assert settings.EXPERIMENTAL_CHAPTER_PAGES_ENABLED is False
+
 
 class TestConfigAllowedUsersParsed:
     """test_config_allowed_users_parsed: "123,456" string parses to [123, 456]."""
@@ -237,6 +244,15 @@ class TestConfigOverrideFromEnv:
 
         settings = Settings()
         assert settings.S3_ENABLED is True
+
+    def test_experimental_chapter_pages_can_be_enabled(self, monkeypatch):
+        """EXPERIMENTAL_CHAPTER_PAGES_ENABLED=true enables opt-in command."""
+        monkeypatch.setenv("EXPERIMENTAL_CHAPTER_PAGES_ENABLED", "true")
+
+        from src.config import Settings
+
+        settings = Settings()
+        assert settings.EXPERIMENTAL_CHAPTER_PAGES_ENABLED is True
 
     def test_local_server_url_can_be_set(self, monkeypatch):
         """TELEGRAM_LOCAL_SERVER_URL should accept a URL string."""
