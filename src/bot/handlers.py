@@ -559,6 +559,7 @@ async def handle_chapters(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     chapters = await cache.get_chapters(video_id)
     display_title = video_id
+    metadata_checked = False
     if not chapters:
         status = await update.message.reply_text("Fetching chapter metadata...")
         try:
@@ -566,7 +567,8 @@ async def handle_chapters(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         except (VideoUnavailableError, DownloadError) as exc:
             await status.edit_text(f"❌ {_user_facing_error(exc)}")
             return
-        display_title = clean_title(metadata.title) or video_id
+        metadata_checked = True
+        display_title = _usable_track_title(metadata.title, video_id) or video_id
         chapters = metadata.chapters
         if chapters:
             try:
@@ -585,10 +587,24 @@ async def handle_chapters(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return
 
     cached_path = await cache.get(video_id)
+    cached_artist = None
     if cached_path is not None:
-        cached_title, _cached_artist = _extract_audio_metadata(cached_path)
-        if display_title == video_id and cached_title:
-            display_title = clean_title(cached_title) or video_id
+        cached_title, cached_artist = _extract_audio_metadata(cached_path)
+        cached_display_title = _usable_track_title(cached_title, video_id)
+        if display_title == video_id and cached_display_title:
+            display_title = cached_display_title
+
+    if display_title == video_id and not metadata_checked:
+        try:
+            metadata = await downloader.fetch_metadata(parsed_url)
+        except (VideoUnavailableError, DownloadError):
+            logger.info(
+                "Could not fetch display title for cached chapters %s",
+                video_id,
+                exc_info=True,
+            )
+        else:
+            display_title = _usable_track_title(metadata.title, video_id) or video_id
 
     pages = _build_chapter_pages(display_title, chapters)
     if not pages:
@@ -620,9 +636,6 @@ async def handle_chapters(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await update.message.reply_text("Cached audio file is missing.")
         return
 
-    cached_title, cached_artist = _extract_audio_metadata(cached_path)
-    if display_title == video_id and cached_title:
-        display_title = clean_title(cached_title) or video_id
     safe_filename = sanitize_filename(display_title) or video_id
     thumbnail = _extract_thumbnail(cached_path)
     with cached_path.open("rb") as audio_file:
@@ -938,6 +951,19 @@ def _extract_audio_metadata(file_path: Path) -> tuple[str | None, str | None]:
     except Exception:
         logger.debug("Could not read metadata from %s", file_path, exc_info=True)
         return None, None
+
+
+def _usable_track_title(title: str | None, video_id: str) -> str | None:
+    """Return a display title, rejecting IDs and source URLs stored in tags."""
+    cleaned = clean_title(title or "")
+    if not cleaned or cleaned == video_id:
+        return None
+    lowered = cleaned.lower()
+    if lowered.startswith(("http://", "https://", "www.")):
+        return None
+    if "youtube.com/" in lowered or "youtu.be/" in lowered:
+        return None
+    return cleaned
 
 
 # ---------------------------------------------------------------------------

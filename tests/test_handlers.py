@@ -1467,6 +1467,42 @@ class TestHandleChapters:
         assert len(buttons) > 1
         assert buttons[0].callback_data == "cp:dQw4w9WgXcQ:0"
 
+    async def test_chapters_cached_file_id_rejects_url_tag_title(self):
+        chapters = tuple((i * 60, f"Chapter {i}") for i in range(80))
+
+        update = make_update(text="/chapters https://youtu.be/dQw4w9WgXcQ")
+        cache = MagicMock()
+        cache.exists = AsyncMock(return_value=True)
+        cache.get_chapters = AsyncMock(return_value=chapters)
+        cache.get = AsyncMock(return_value=Path("/tmp/dQw4w9WgXcQ.m4a"))
+        cache.get_file_id = AsyncMock(return_value="AgACAg_cached_fid")
+        downloader = MagicMock()
+        downloader.fetch_metadata = AsyncMock(
+            return_value=TrackMetadata(
+                video_id="dQw4w9WgXcQ",
+                title="Actual Track Name",
+                chapters=chapters,
+            )
+        )
+        downloader.download = AsyncMock()
+
+        context = make_context(cache=cache, downloader=downloader)
+        context.bot_data["settings"].EXPERIMENTAL_CHAPTER_PAGES_ENABLED = True
+        context.bot.send_audio = AsyncMock(
+            return_value=MagicMock(audio=MagicMock(file_id="AgACAg_cached_fid"))
+        )
+
+        with patch(
+            "src.bot.handlers._extract_audio_metadata",
+            return_value=("https://youtu.be/dQw4w9WgXcQ", "Test Artist"),
+        ):
+            await handle_chapters(update, context)
+
+        downloader.fetch_metadata.assert_called_once()
+        kwargs = context.bot.send_audio.call_args.kwargs
+        assert kwargs["caption"].startswith("🎵 Actual Track Name\n1/")
+        assert "youtu.be" not in kwargs["caption"]
+
     async def test_chapters_cached_without_chapters_fetches_metadata_only(self):
         new_chapters = ((0, "Intro"), (60, "Part 2"))
 
