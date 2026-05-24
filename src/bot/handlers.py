@@ -720,10 +720,16 @@ class CaptionResult:
 
 
 def _format_timestamp(seconds: int) -> str:
-    """Format seconds as HH:MM:SS."""
+    """Format seconds as a compact Telegram media timestamp.
+
+    Keeps exact second precision while omitting redundant leading hours/zeroes:
+    ``0:45``, ``2:05``, ``1:01:01``.
+    """
     h, remainder = divmod(seconds, 3600)
     m, s = divmod(remainder, 60)
-    return f"{h:02d}:{m:02d}:{s:02d}"
+    if h:
+        return f"{h}:{m:02d}:{s:02d}"
+    return f"{m}:{s:02d}"
 
 
 def _normalize_chapters(chapters: tuple[Chapter, ...]) -> tuple[Chapter, ...]:

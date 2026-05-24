@@ -592,16 +592,16 @@ class TestHandleUrlRateLimit:
 
 class TestFormatTimestamp:
     def test_zero(self):
-        assert _format_timestamp(0) == "00:00:00"
+        assert _format_timestamp(0) == "0:00"
 
     def test_seconds_only(self):
-        assert _format_timestamp(45) == "00:00:45"
+        assert _format_timestamp(45) == "0:45"
 
     def test_minutes_and_seconds(self):
-        assert _format_timestamp(125) == "00:02:05"
+        assert _format_timestamp(125) == "2:05"
 
     def test_hours(self):
-        assert _format_timestamp(3661) == "01:01:01"
+        assert _format_timestamp(3661) == "1:01:01"
 
     def test_large_value(self):
         assert _format_timestamp(86399) == "23:59:59"
@@ -642,9 +642,7 @@ class TestBuildCaptionResult:
         """Short chapter list: full caption, no follow-up."""
         chapters = ((0, "Intro"), (60, "Verse"), (180, "Chorus"))
         r = _build_caption_result("My Song", chapters)
-        assert (
-            r.caption == "🎵 My Song\n\n00:00:00 Intro\n00:01:00 Verse\n00:03:00 Chorus"
-        )
+        assert r.caption == "🎵 My Song\n\n0:00 Intro\n1:00 Verse\n3:00 Chorus"
         assert r.index_messages == ()
 
     def test_tier2_numbered_timestamps_with_title(self):
@@ -668,8 +666,9 @@ class TestBuildCaptionResult:
 
     def test_tier3_numbered_timestamps_without_title(self):
         """Numbered timestamps + long title overflow; timestamps alone fit."""
-        long_title = "T" * 200
-        # n=70: full=1043>1024, tier2=1034>1024, tier3=830<=1024 → Tier 3
+        long_title = "T" * 500
+        # Compact timestamps let more lines fit, so use a title long enough
+        # that title + numbered timestamps overflow while timestamps alone fit.
         chapters = tuple((i * 60, "Ch") for i in range(70))
         r = _build_caption_result(long_title, chapters)
         assert len(r.caption) <= 1024
@@ -682,8 +681,8 @@ class TestBuildCaptionResult:
 
     def test_tier4_extreme_title_only_caption(self):
         """Caption is title-only when even bare numbered timestamps exceed 1024."""
-        # With 200-char title, n=90: tier3=1070>1024 → Tier 4
-        chapters = tuple((i * 60, f"Chapter {i}") for i in range(90))
+        # n=120: compact bare numbered timestamps still exceed 1024 → Tier 4
+        chapters = tuple((i * 60, f"Chapter {i}") for i in range(120))
         r = _build_caption_result("Podcast", chapters)
         assert r.caption == "🎵 Podcast"
         assert len(r.caption) <= 1024
@@ -691,12 +690,12 @@ class TestBuildCaptionResult:
         # All chapter names present across index messages
         combined = "\n".join(r.index_messages)
         assert "Chapter 0" in combined
-        assert "Chapter 89" in combined
+        assert "Chapter 119" in combined
         # Index messages each within limit
         for msg in r.index_messages:
             assert len(msg) <= 4096
         # Timestamps present in extreme mode
-        assert "00:00:00" in combined
+        assert "0:00" in combined
 
     def test_caption_never_exceeds_1024(self):
         """Regardless of tier, caption is always ≤ 1024."""
@@ -730,7 +729,7 @@ class TestBuildCaptionResult:
     def test_tier1_boundary_exactly_1024(self):
         """Caption at exactly 1024 chars is Tier 1 (no overflow)."""
         # Craft title so full caption lands exactly at 1024
-        base = "🎵 \n\n00:00:00 Ch"
+        base = "🎵 \n\n0:00 Ch"
         padding = "X" * (1024 - len(base))
         r = _build_caption_result(padding, ((0, "Ch"),))
         assert len(r.caption) == 1024
