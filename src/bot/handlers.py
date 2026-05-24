@@ -582,7 +582,13 @@ async def handle_chapters(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await update.message.reply_text("No chapters found for this track.")
         return
 
-    pages = _build_chapter_pages(chapters)
+    cached_path = await cache.get(video_id)
+    if cached_path is not None:
+        cached_title, _cached_artist = _extract_audio_metadata(cached_path)
+        if display_title == video_id and cached_title:
+            display_title = clean_title(cached_title) or video_id
+
+    pages = _build_chapter_pages(display_title, chapters)
     if not pages:
         await update.message.reply_text(
             "Chapter titles are too long for paginated captions."
@@ -608,7 +614,6 @@ async def handle_chapters(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         )
         return
 
-    cached_path = await cache.get(video_id)
     if cached_path is None:
         await update.message.reply_text("Cached audio file is missing.")
         return
@@ -669,7 +674,10 @@ async def handle_chapter_page_callback(
 
     cache: CacheBackend = context.bot_data["cache"]
     chapters = await cache.get_chapters(video_id)
-    pages = _build_chapter_pages(chapters) if chapters else ()
+    title = (
+        _extract_chapter_page_title(getattr(query.message, "caption", None)) or video_id
+    )
+    pages = _build_chapter_pages(title, chapters) if chapters else ()
     if not pages or page_index >= len(pages):
         await query.answer("Chapter pages expired.", show_alert=True)
         return
@@ -1053,6 +1061,20 @@ _CHAPTER_PAGE_CALLBACK_PREFIX = "cp"
 _CHAPTER_PAGE_BODY_MAX = 970
 
 
+def _chapter_page_header(title: str, page_number: int, total: int, label: str) -> str:
+    return f"🎵 {title}\n{page_number}/{total} · {label}"
+
+
+def _extract_chapter_page_title(caption: str | None) -> str | None:
+    if not caption:
+        return None
+    first_line = caption.splitlines()[0].strip()
+    if not first_line.startswith("🎵 "):
+        return None
+    title = first_line.removeprefix("🎵 ").strip()
+    return title or None
+
+
 def _chapter_page_callback_data(video_id: str, page_index: int) -> str | None:
     data = f"{_CHAPTER_PAGE_CALLBACK_PREFIX}:{video_id}:{page_index}"
     # Bot API callback_data is 1-64 bytes, measured after UTF-8 encoding.
@@ -1079,27 +1101,20 @@ def _parse_chapter_page_callback_data(data: str) -> tuple[str, int] | None:
     return video_id, page_index
 
 
-def _build_chapter_pages(chapters: tuple[Chapter, ...]) -> tuple[ChapterPage, ...]:
-    """Build compact, lossless chapter caption pages for inline navigation."""
-    normalized = _normalize_chapters(chapters)
-    if not normalized:
-        return ()
-
-    entries = [
-        (index, f"{_format_timestamp(start)} - {name}")
-        for index, (start, name) in enumerate(normalized, start=1)
-    ]
-
+def _pack_chapter_page_entries(
+    entries: list[tuple[int, str]],
+    body_max: int,
+) -> list[tuple[int, int, list[str]]] | None:
     raw_pages: list[tuple[int, int, list[str]]] = []
     current_start = entries[0][0]
     current_lines: list[str] = []
     current_len = 0
 
     for index, line in entries:
-        if len(line) > _CHAPTER_PAGE_BODY_MAX:
-            return ()
+        if len(line) > body_max:
+            return None
         needed = len(line) if not current_lines else 1 + len(line)
-        if current_lines and current_len + needed > _CHAPTER_PAGE_BODY_MAX:
+        if current_lines and current_len + needed > body_max:
             raw_pages.append((current_start, entries[index - 2][0], current_lines))
             current_start = index
             current_lines = [line]
@@ -1109,12 +1124,51 @@ def _build_chapter_pages(chapters: tuple[Chapter, ...]) -> tuple[ChapterPage, ..
             current_len += needed
 
     raw_pages.append((current_start, entries[-1][0], current_lines))
+    return raw_pages
+
+
+def _build_chapter_pages(
+    title: str,
+    chapters: tuple[Chapter, ...],
+) -> tuple[ChapterPage, ...]:
+    """Build compact, lossless chapter caption pages for inline navigation."""
+    normalized = _normalize_chapters(chapters)
+    if not normalized:
+        return ()
+    title = clean_title(title) or "Untitled"
+
+    entries = [
+        (index, f"{_format_timestamp(start)} - {name}")
+        for index, (start, name) in enumerate(normalized, start=1)
+    ]
+
+    body_max = _CHAPTER_PAGE_BODY_MAX
+    raw_pages: list[tuple[int, int, list[str]]] | None = None
+    for _ in range(len(entries)):
+        raw_pages = _pack_chapter_page_entries(entries, body_max)
+        if raw_pages is None:
+            return ()
+
+        total = len(raw_pages)
+        available = _CHAPTER_PAGE_BODY_MAX
+        for page_number, (start, end, _lines) in enumerate(raw_pages, start=1):
+            label = f"{start:02d}-{end:02d}"
+            header = _chapter_page_header(title, page_number, total, label)
+            available = min(available, _CAPTION_MAX - len(header) - 1)
+        if available < 1:
+            return ()
+        if available == body_max:
+            break
+        body_max = available
+    else:
+        return ()
 
     total = len(raw_pages)
     pages: list[ChapterPage] = []
     for page_number, (start, end, lines) in enumerate(raw_pages, start=1):
         label = f"{start:02d}-{end:02d}"
-        caption = f"{page_number}/{total} · {label}\n" + "\n".join(lines)
+        caption = _chapter_page_header(title, page_number, total, label)
+        caption += "\n" + "\n".join(lines)
         if len(caption) > _CAPTION_MAX:
             return ()
         pages.append(ChapterPage(caption=caption, label=label))

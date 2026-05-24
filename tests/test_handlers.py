@@ -1366,15 +1366,19 @@ class TestHandleRefresh:
 
 class TestHandleChapters:
     def test_chapter_pages_use_dash_after_timestamp(self):
-        pages = _build_chapter_pages(((0, "Intro"), (65, "Main part")))
+        pages = _build_chapter_pages(
+            "Full Track Title",
+            ((0, "Intro"), (65, "Main part")),
+        )
 
         assert pages
+        assert pages[0].caption.startswith("🎵 Full Track Title\n1/1")
         assert "0:00 - Intro" in pages[0].caption
         assert "1:05 - Main part" in pages[0].caption
 
     def test_chapter_pages_keep_entries_atomic(self):
-        long_name = "A" * 955
-        pages = _build_chapter_pages(((0, long_name), (60, "Next")))
+        long_name = "A" * 960
+        pages = _build_chapter_pages("Full Track Title", ((0, long_name), (60, "Next")))
 
         assert len(pages) == 2
         assert long_name in pages[0].caption
@@ -1385,7 +1389,7 @@ class TestHandleChapters:
     def test_chapter_pages_reject_single_entry_that_cannot_fit(self):
         too_long_name = "A" * 970
 
-        pages = _build_chapter_pages(((0, too_long_name),))
+        pages = _build_chapter_pages("Full Track Title", ((0, too_long_name),))
 
         assert pages == ()
 
@@ -1427,6 +1431,7 @@ class TestHandleChapters:
         cache = MagicMock()
         cache.exists = AsyncMock(return_value=True)
         cache.get_chapters = AsyncMock(return_value=chapters)
+        cache.get = AsyncMock(return_value=Path("/tmp/dQw4w9WgXcQ.m4a"))
         cache.get_file_id = AsyncMock(return_value="AgACAg_cached_fid")
         downloader = MagicMock()
         downloader.fetch_metadata = AsyncMock()
@@ -1438,13 +1443,18 @@ class TestHandleChapters:
             return_value=MagicMock(audio=MagicMock(file_id="AgACAg_cached_fid"))
         )
 
-        await handle_chapters(update, context)
+        with patch(
+            "src.bot.handlers._extract_audio_metadata",
+            return_value=("Test Song", "Test Artist"),
+        ):
+            await handle_chapters(update, context)
 
         downloader.download.assert_not_called()
         downloader.fetch_metadata.assert_not_called()
         context.bot.send_audio.assert_called_once()
         kwargs = context.bot.send_audio.call_args.kwargs
         assert kwargs["audio"] == "AgACAg_cached_fid"
+        assert kwargs["caption"].startswith("🎵 Test Song\n1/")
         assert "1/" in kwargs["caption"]
         assert kwargs["reply_markup"] is not None
         buttons = [
@@ -1466,6 +1476,7 @@ class TestHandleChapters:
         cache.exists = AsyncMock(return_value=True)
         cache.get_chapters = AsyncMock(return_value=None)
         cache.store_chapters = AsyncMock()
+        cache.get = AsyncMock(return_value=None)
         cache.get_file_id = AsyncMock(return_value="AgACAg_cached_fid")
         downloader = MagicMock()
         downloader.fetch_metadata = AsyncMock(
@@ -1501,6 +1512,9 @@ class TestHandleChapterPageCallback:
         query.data = "cp:dQw4w9WgXcQ:1"
         query.answer = AsyncMock()
         query.edit_message_caption = AsyncMock()
+        query.message = MagicMock(
+            caption="🎵 Full Track Title\n1/2 · 01-60\n0:00 - Intro"
+        )
         update.callback_query = query
 
         cache = MagicMock()
@@ -1512,7 +1526,7 @@ class TestHandleChapterPageCallback:
 
         query.edit_message_caption.assert_called_once()
         kwargs = query.edit_message_caption.call_args.kwargs
-        assert kwargs["caption"].startswith("2/")
+        assert kwargs["caption"].startswith("🎵 Full Track Title\n2/")
         assert kwargs["reply_markup"] is not None
         query.answer.assert_called_once()
 
