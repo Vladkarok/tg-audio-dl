@@ -21,7 +21,10 @@ services:
     tmpfs:
       - /tmp:size=256m,noexec,nosuid,nodev
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO /dev/null http://127.0.0.1:8081 2>&1 | grep -qv 'Connection refused'"]
+      # Healthy = the server answered at all. First wget covers a silent 2xx
+      # (exit 0, no output); the fallback treats any non-connection-refused
+      # error output (e.g. the 404 served on /) as "up".
+      test: ["CMD-SHELL", "wget -qO /dev/null http://127.0.0.1:8081 2>/dev/null || wget -qO /dev/null http://127.0.0.1:8081 2>&1 | grep -qv 'Connection refused'"]
       interval: 5s
       timeout: 5s
       retries: 10
