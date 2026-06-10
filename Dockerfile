@@ -3,7 +3,7 @@ FROM python:3.13-slim AS builder
 WORKDIR /app
 
 # Install uv
-COPY --from=ghcr.io/astral-sh/uv:0.6.6 /uv /usr/local/bin/uv
+COPY --from=ghcr.io/astral-sh/uv:0.10.10 /uv /usr/local/bin/uv
 
 # Copy dependency files
 COPY pyproject.toml uv.lock* ./
