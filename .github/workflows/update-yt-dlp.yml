@@ -8,31 +8,81 @@ on:
 permissions:
   contents: write
 
+env:
+  # Supply-chain cooldown: never adopt a release younger than this many days,
+  # so a compromised upload is likely yanked before we ever lock it.
+  YTDLP_COOLDOWN_DAYS: "3"
+
 jobs:
   update:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           fetch-depth: 0  # needed to read tags for version bump
 
       - name: Install uv
-        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8
         with:
-          version: "0.6.6"
+          version: "0.10.10"
+
+      - name: Resolve cooldown-compliant yt-dlp version
+        id: target
+        run: |
+          curl -sf https://pypi.org/pypi/yt-dlp/json -o /tmp/ytdlp.json
+          TARGET=$(python3 - <<'PY'
+          import datetime
+          import json
+          import os
+
+          cooldown = datetime.timedelta(days=int(os.environ["YTDLP_COOLDOWN_DAYS"]))
+          now = datetime.datetime.now(datetime.timezone.utc)
+          with open("/tmp/ytdlp.json") as f:
+              data = json.load(f)
+
+          best = None
+          for version, files in data["releases"].items():
+              if not files or any(f.get("yanked") for f in files):
+                  continue
+              # Stable releases only (yt-dlp uses YYYY.M.D); skip dev/rc builds.
+              parts = version.split(".")
+              if not all(p.isdigit() for p in parts):
+                  continue
+              uploaded = min(
+                  datetime.datetime.fromisoformat(f["upload_time_iso_8601"])
+                  for f in files
+              )
+              if now - uploaded < cooldown:
+                  continue
+              key = tuple(int(p) for p in parts)
+              if best is None or key > best[0]:
+                  best = (key, version)
+
+          print(best[1] if best else "")
+          PY
+          )
+          if [ -z "$TARGET" ]; then
+            echo "::error::No cooldown-compliant yt-dlp release found on PyPI"
+            exit 1
+          fi
+          echo "Cooldown-compliant target: $TARGET"
+          echo "version=$TARGET" >> "$GITHUB_OUTPUT"
 
       - name: Update yt-dlp
-        run: uv lock --upgrade-package yt-dlp
+        run: uv lock --upgrade-package "yt-dlp==${{ steps.target.outputs.version }}"
 
       - name: Detect version change
         id: check
         run: |
+          locked_ytdlp() {
+            grep -A1 '^name = "yt-dlp"$' <<<"$1" | grep '^version' | cut -d'"' -f2
+          }
           if git diff --quiet uv.lock; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
           else
-            OLD=$(git diff uv.lock | grep '^-version = ' | grep -oP '"\K[^"]+' | head -1)
-            NEW=$(git diff uv.lock | grep '^+version = ' | grep -oP '"\K[^"]+' | head -1)
+            OLD=$(locked_ytdlp "$(git show HEAD:uv.lock)")
+            NEW=$(locked_ytdlp "$(cat uv.lock)")
             echo "changed=true"  >> "$GITHUB_OUTPUT"
             echo "old=${OLD}"    >> "$GITHUB_OUTPUT"
             echo "new=${NEW}"    >> "$GITHUB_OUTPUT"
