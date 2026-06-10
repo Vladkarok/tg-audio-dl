@@ -510,6 +510,70 @@ class TestDownloadUnavailableVideoRaises:
             await downloader.download(_make_parsed_single())
 
 
+class TestDownloadErrorClassification:
+    """Download-path errors use the same marker classification as metadata.
+
+    Transient failures (proxy/network/rate-limit) must surface as generic
+    DownloadError so the user is not told the video is unavailable.
+    """
+
+    @staticmethod
+    def _fake_ydl_cls_raising(message: str):
+        import yt_dlp
+
+        def fake_ydl_cls(opts):
+            mock_ydl = MagicMock()
+            mock_ydl.__enter__ = MagicMock(return_value=mock_ydl)
+            mock_ydl.__exit__ = MagicMock(return_value=False)
+            mock_ydl.extract_info.side_effect = yt_dlp.utils.DownloadError(message)
+            return mock_ydl
+
+        return fake_ydl_cls
+
+    async def test_transient_error_is_generic_download_error(
+        self, tmp_path: Path
+    ) -> None:
+        downloader = AudioDownloader(
+            download_dir=tmp_path, max_file_size_bytes=10 * 1024 * 1024
+        )
+        fake_cls = self._fake_ydl_cls_raising(
+            "Unable to download webpage: HTTP Error 503: Service Unavailable"
+        )
+        with (
+            patch("src.downloader.client.yt_dlp.YoutubeDL", side_effect=fake_cls),
+            pytest.raises(DownloadError) as excinfo,
+        ):
+            await downloader.download(_make_parsed_single())
+        assert not isinstance(excinfo.value, VideoUnavailableError)
+
+    async def test_geo_block_is_video_unavailable(self, tmp_path: Path) -> None:
+        downloader = AudioDownloader(
+            download_dir=tmp_path, max_file_size_bytes=10 * 1024 * 1024
+        )
+        fake_cls = self._fake_ydl_cls_raising(
+            "The uploader has not made this video available in your country"
+        )
+        with (
+            patch("src.downloader.client.yt_dlp.YoutubeDL", side_effect=fake_cls),
+            pytest.raises(VideoUnavailableError),
+        ):
+            await downloader.download(_make_parsed_single())
+
+    async def test_transient_error_still_cleans_partials(self, tmp_path: Path) -> None:
+        partial = tmp_path / f"{VIDEO_ID}.m4a"
+        partial.write_bytes(b"partial")
+        downloader = AudioDownloader(
+            download_dir=tmp_path, max_file_size_bytes=10 * 1024 * 1024
+        )
+        fake_cls = self._fake_ydl_cls_raising("Connection reset by peer")
+        with (
+            patch("src.downloader.client.yt_dlp.YoutubeDL", side_effect=fake_cls),
+            pytest.raises(DownloadError),
+        ):
+            await downloader.download(_make_parsed_single())
+        assert not partial.exists()
+
+
 # ---------------------------------------------------------------------------
 # test_download_result_has_file_path
 # ---------------------------------------------------------------------------
@@ -564,7 +628,7 @@ class TestDownloadCleansUpOnError:
 
         with (
             patch("src.downloader.client.yt_dlp.YoutubeDL", side_effect=fake_ydl_cls),
-            pytest.raises(VideoUnavailableError),
+            pytest.raises(DownloadError),
         ):
             await downloader.download(_make_parsed_single())
 
@@ -1022,7 +1086,7 @@ class TestCleanupPartialsOSErrorSwallowed:
         with (
             patch.object(Path, "unlink", unlink_raises),
             patch("src.downloader.client.yt_dlp.YoutubeDL", side_effect=fake_ydl_cls),
-            pytest.raises(VideoUnavailableError),
+            pytest.raises(DownloadError),
         ):
             await downloader.download(_make_parsed_single())
 

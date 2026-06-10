@@ -446,7 +446,9 @@ class AudioDownloader:
             raise DownloadError(
                 f"Download timed out after {self._download_timeout}s"
             ) from exc
-        except VideoUnavailableError:
+        except DownloadError:
+            # Covers VideoUnavailableError too — partials must not linger
+            # regardless of how the failure was classified.
             self._cleanup_partials(yt_id)
             raise
 
@@ -572,7 +574,14 @@ class AudioDownloader:
     # ------------------------------------------------------------------
 
     def _run_ydl(self, ydl_opts: dict[str, Any], url: str) -> dict[str, Any]:
-        """Call yt-dlp synchronously; translate errors to our hierarchy."""
+        """Call yt-dlp synchronously; translate errors to our hierarchy.
+
+        Same marker-based classification as :meth:`_run_ydl_metadata`:
+        genuine unavailability (private/removed/geo-blocked/age-gated)
+        becomes :class:`VideoUnavailableError`; transient failures
+        (proxy/network/rate-limit) stay generic :class:`DownloadError` so
+        the user is not told the video itself is gone.
+        """
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info: dict[str, Any] = ydl.extract_info(url, download=True)
@@ -582,7 +591,10 @@ class AudioDownloader:
             yt_dlp.utils.ExtractorError,
             yt_dlp.utils.UnsupportedError,
         ) as exc:
-            raise VideoUnavailableError(self._sanitize_error(str(exc))) from exc
+            message = self._sanitize_error(str(exc))
+            if _is_unavailable_error(str(exc)):
+                raise VideoUnavailableError(message) from exc
+            raise DownloadError(f"Download failed: {message}") from exc
         except asyncio.CancelledError:
             raise
         except Exception as exc:
