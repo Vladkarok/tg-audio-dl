@@ -11,31 +11,34 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import dataclasses
-import io
 import logging
 import time
-from dataclasses import dataclass, field
 from pathlib import Path
 
-import mutagen
-from PIL import Image
-from telegram import (
-    Bot,
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
-    InputFile,
-    Message,
-    Update,
-)
+from telegram import Bot, Message, Update
 from telegram.error import BadRequest
 from telegram.ext import ContextTypes
 
+from src.bot.captions import (
+    _CAPTION_MAX as _CAPTION_MAX,  # re-exported for tests
+)
+from src.bot.captions import (
+    _build_caption_result,
+    _build_chapter_pages,
+    _build_chapter_pages_markup,
+    _extract_chapter_page_title,
+    _normalize_chapters,
+    _parse_chapter_page_callback_data,
+)
+from src.bot.captions import (
+    _format_timestamp as _format_timestamp,  # re-exported for tests
+)
+from src.bot.media import _extract_audio_metadata, _extract_thumbnail
 from src.bot.progress import ProgressManager, Step, StepStatus
 from src.cache.base import CacheBackend
 from src.config import Settings
 from src.downloader.client import (
     AudioDownloader,
-    Chapter,
     DownloadError,
     DownloadProgress,
     DownloadResult,
@@ -421,7 +424,6 @@ async def handle_refresh(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         sent_msg: Message | None = None
         if file_id:
             try:
-                await progress.set_step(Step.PROCESSING, StepStatus.DONE)
                 await progress.set_step(Step.UPLOADING, StepStatus.ACTIVE)
                 await progress.start_upload_animation()
                 sent_msg = await context.bot.send_audio(
@@ -919,40 +921,6 @@ async def _process_url(
     await progress.delete()
 
 
-def _extract_audio_metadata(file_path: Path) -> tuple[str | None, str | None]:
-    """Extract title and artist from audio tags. Returns (title, artist).
-
-    Supports M4A/MP4, Opus/Vorbis (webm/ogg), and MP3 (ID3) via mutagen
-    auto-detection.
-    """
-    try:
-        audio = mutagen.File(file_path)  # type: ignore[attr-defined]
-        if audio is None or audio.tags is None:
-            return None, None
-        tags = audio.tags
-        # M4A / MP4
-        if hasattr(tags, "get") and "\xa9nam" in tags:
-            title = tags.get("\xa9nam", [None])[0]
-            artist = tags.get("\xa9ART", [None])[0]
-            return title, artist
-        # Vorbis (Opus, OGG, WebM)
-        if hasattr(tags, "get") and "title" in tags:
-            title = tags.get("title", [None])[0]
-            artist = tags.get("artist", [None])[0]
-            return title, artist
-        # ID3 (MP3)
-        if hasattr(tags, "getall"):
-            tit2 = tags.getall("TIT2")
-            tpe1 = tags.getall("TPE1")
-            title = str(tit2[0]) if tit2 else None
-            artist = str(tpe1[0]) if tpe1 else None
-            return title, artist
-        return None, None
-    except Exception:
-        logger.debug("Could not read metadata from %s", file_path, exc_info=True)
-        return None, None
-
-
 def _usable_track_title(title: str | None, video_id: str) -> str | None:
     """Return a display title, rejecting IDs and source URLs stored in tags."""
     cleaned = clean_title(title or "")
@@ -964,352 +932,6 @@ def _usable_track_title(title: str | None, video_id: str) -> str | None:
     if "youtube.com/" in lowered or "youtu.be/" in lowered:
         return None
     return cleaned
-
-
-# ---------------------------------------------------------------------------
-# Caption formatting
-# ---------------------------------------------------------------------------
-
-_CAPTION_MAX = 1024
-_MESSAGE_MAX = 4096
-
-
-@dataclass(frozen=True)
-class CaptionResult:
-    """Caption for send_audio plus optional chapter-index reply messages."""
-
-    caption: str
-    # Each element is one reply message (≤4096 chars). Empty = no follow-up needed.
-    index_messages: tuple[str, ...] = field(default_factory=tuple)
-
-
-@dataclass(frozen=True)
-class ChapterPage:
-    """One experimental caption page for chapter navigation."""
-
-    caption: str
-    label: str
-
-
-def _format_timestamp(seconds: int) -> str:
-    """Format seconds as a compact Telegram media timestamp.
-
-    Keeps exact second precision while omitting redundant leading hours/zeroes:
-    ``0:45``, ``2:05``, ``1:01:01``.
-    """
-    h, remainder = divmod(seconds, 3600)
-    m, s = divmod(remainder, 60)
-    if h:
-        return f"{h}:{m:02d}:{s:02d}"
-    return f"{m}:{s:02d}"
-
-
-def _normalize_chapters(chapters: tuple[Chapter, ...]) -> tuple[Chapter, ...]:
-    """Strip whitespace, drop empty names, deduplicate start times (first wins)."""
-    seen: set[int] = set()
-    result: list[Chapter] = []
-    for start, name in chapters:
-        clean = " ".join(name.split())
-        if not clean or start in seen:
-            continue
-        seen.add(start)
-        result.append((start, clean))
-    return tuple(result)
-
-
-def _build_index_messages(
-    chapters: tuple[Chapter, ...],
-    header: str,
-    include_timestamps: bool = False,
-    max_length: int = _MESSAGE_MAX,
-) -> tuple[str, ...]:
-    """Pack chapter index lines into one or more messages each ≤ max_length chars.
-
-    When include_timestamps is True each line is: ``HH:MM:SS N - Name``
-    Otherwise: ``N - Name``
-    """
-    if include_timestamps:
-        lines = [
-            f"{_format_timestamp(s)} {i} - {name}"
-            for i, (s, name) in enumerate(chapters, 1)
-        ]
-    else:
-        lines = [f"{i} - {name}" for i, (_, name) in enumerate(chapters, 1)]
-
-    messages: list[str] = []
-    current: list[str] = [header]
-    current_len = len(header)
-
-    for line in lines:
-        needed = 1 + len(line)  # leading \n
-        if current_len + needed > max_length and current:
-            messages.append("\n".join(current))
-            current = [line]
-            current_len = len(line)
-        else:
-            current.append(line)
-            current_len += needed
-
-    if current:
-        messages.append("\n".join(current))
-
-    return tuple(messages)
-
-
-def _build_caption_result(
-    title: str,
-    chapters: tuple[Chapter, ...] | None,
-) -> CaptionResult:
-    """Build caption + optional chapter-index follow-up messages.
-
-    Four-tier strategy (timestamps are NEVER individually truncated):
-
-    Tier 1  Full caption (title + full chapter names) fits in 1024 chars.
-            → Caption only, no follow-up.
-
-    Tier 2  Full names don't fit; title + numbered timestamps fit.
-            → Caption: ``🎵 Title\\n\\nHH:MM:SS 1\\n...``
-            → Follow-up: ``📋 Chapters:\\n1 - Name\\n...``
-
-    Tier 3  Title + numbered timestamps don't fit; numbered timestamps alone fit.
-            → Caption: ``HH:MM:SS 1\\n...`` (no title)
-            → Follow-up includes title header so user can still see it.
-
-    Tier 4  Even bare numbered timestamps exceed 1024 (200+ chapters).
-            → Caption: ``🎵 Title`` only (no timestamps at all).
-            → Follow-up: ``🎵 Title\\n\\n📋 All chapters:\\nHH:MM:SS 1 - Name\\n...``
-              so all navigation info is available in the reply.
-    """
-    title_line = f"🎵 {title}"
-
-    if not chapters:
-        return CaptionResult(caption=title_line[:_CAPTION_MAX])
-
-    chapters = _normalize_chapters(chapters)
-    if not chapters:
-        return CaptionResult(caption=title_line[:_CAPTION_MAX])
-
-    # --- Tier 1: full caption with chapter names ---
-    full_lines = [f"{_format_timestamp(s)} {name}" for s, name in chapters]
-    full_caption = title_line + "\n\n" + "\n".join(full_lines)
-    if len(full_caption) <= _CAPTION_MAX:
-        return CaptionResult(caption=full_caption)
-
-    # --- Tier 2: numbered timestamps + title ---
-    numbered_lines = [
-        f"{_format_timestamp(s)} {i}" for i, (s, _) in enumerate(chapters, 1)
-    ]
-    tier2_caption = title_line + "\n\n" + "\n".join(numbered_lines)
-    if len(tier2_caption) <= _CAPTION_MAX:
-        index = _build_index_messages(chapters, header="📋 Chapters:")
-        return CaptionResult(caption=tier2_caption, index_messages=index)
-
-    # --- Tier 3: numbered timestamps only (no title) ---
-    tier3_caption = "\n".join(numbered_lines)
-    if len(tier3_caption) <= _CAPTION_MAX:
-        header = f"🎵 {title}\n\n📋 Chapters:"
-        index = _build_index_messages(chapters, header=header)
-        return CaptionResult(caption=tier3_caption, index_messages=index)
-
-    # --- Tier 4: title-only caption; all info in follow-up (with timestamps) ---
-    header = f"🎵 {title}\n\n📋 All chapters:"
-    index = _build_index_messages(chapters, header=header, include_timestamps=True)
-    return CaptionResult(caption=title_line[:_CAPTION_MAX], index_messages=index)
-
-
-_CHAPTER_PAGE_CALLBACK_PREFIX = "cp"
-_CHAPTER_PAGE_BODY_MAX = 970
-
-
-def _chapter_page_header(title: str, page_number: int, total: int, label: str) -> str:
-    return f"🎵 {title}\n{page_number}/{total} · {label}"
-
-
-def _extract_chapter_page_title(caption: str | None) -> str | None:
-    if not caption:
-        return None
-    first_line = caption.splitlines()[0].strip()
-    if not first_line.startswith("🎵 "):
-        return None
-    title = first_line.removeprefix("🎵 ").strip()
-    return title or None
-
-
-def _chapter_page_callback_data(video_id: str, page_index: int) -> str | None:
-    data = f"{_CHAPTER_PAGE_CALLBACK_PREFIX}:{video_id}:{page_index}"
-    # Bot API callback_data is 1-64 bytes, measured after UTF-8 encoding.
-    return data if len(data.encode()) <= 64 else None
-
-
-def _parse_chapter_page_callback_data(data: str) -> tuple[str, int] | None:
-    parts = data.split(":")
-    if len(parts) != 3 or parts[0] != _CHAPTER_PAGE_CALLBACK_PREFIX:
-        return None
-    video_id = parts[1]
-    try:
-        page_index = int(parts[2])
-    except ValueError:
-        return None
-    if page_index < 0:
-        return None
-    try:
-        from src.cache.base import validate_video_id
-
-        validate_video_id(video_id)
-    except ValueError:
-        return None
-    return video_id, page_index
-
-
-def _pack_chapter_page_entries(
-    entries: list[tuple[int, str]],
-    body_max: int,
-) -> list[tuple[int, int, list[str]]] | None:
-    raw_pages: list[tuple[int, int, list[str]]] = []
-    current_start = entries[0][0]
-    current_lines: list[str] = []
-    current_len = 0
-
-    for index, line in entries:
-        if len(line) > body_max:
-            return None
-        needed = len(line) if not current_lines else 1 + len(line)
-        if current_lines and current_len + needed > body_max:
-            raw_pages.append((current_start, entries[index - 2][0], current_lines))
-            current_start = index
-            current_lines = [line]
-            current_len = len(line)
-        else:
-            current_lines.append(line)
-            current_len += needed
-
-    raw_pages.append((current_start, entries[-1][0], current_lines))
-    return raw_pages
-
-
-def _build_chapter_pages(
-    title: str,
-    chapters: tuple[Chapter, ...],
-) -> tuple[ChapterPage, ...]:
-    """Build compact, lossless chapter caption pages for inline navigation."""
-    normalized = _normalize_chapters(chapters)
-    if not normalized:
-        return ()
-    title = clean_title(title) or "Untitled"
-
-    entries = [
-        (index, f"{_format_timestamp(start)} - {name}")
-        for index, (start, name) in enumerate(normalized, start=1)
-    ]
-
-    body_max = _CHAPTER_PAGE_BODY_MAX
-    raw_pages: list[tuple[int, int, list[str]]] | None = None
-    for _ in range(len(entries)):
-        raw_pages = _pack_chapter_page_entries(entries, body_max)
-        if raw_pages is None:
-            return ()
-
-        total = len(raw_pages)
-        available = _CHAPTER_PAGE_BODY_MAX
-        for page_number, (start, end, _lines) in enumerate(raw_pages, start=1):
-            label = f"{start:02d}-{end:02d}"
-            header = _chapter_page_header(title, page_number, total, label)
-            available = min(available, _CAPTION_MAX - len(header) - 1)
-        if available < 1:
-            return ()
-        if available == body_max:
-            break
-        body_max = available
-    else:
-        return ()
-
-    total = len(raw_pages)
-    pages: list[ChapterPage] = []
-    for page_number, (start, end, lines) in enumerate(raw_pages, start=1):
-        label = f"{start:02d}-{end:02d}"
-        caption = _chapter_page_header(title, page_number, total, label)
-        caption += "\n" + "\n".join(lines)
-        if len(caption) > _CAPTION_MAX:
-            return ()
-        pages.append(ChapterPage(caption=caption, label=label))
-
-    return tuple(pages)
-
-
-def _build_chapter_pages_markup(
-    video_id: str,
-    pages: tuple[ChapterPage, ...],
-) -> InlineKeyboardMarkup | None:
-    """Build page buttons, returning None when callback data cannot fit."""
-    if len(pages) <= 1:
-        return None
-
-    buttons: list[InlineKeyboardButton] = []
-    for index, page in enumerate(pages):
-        data = _chapter_page_callback_data(video_id, index)
-        if data is None:
-            return None
-        buttons.append(InlineKeyboardButton(page.label, callback_data=data))
-
-    rows = [buttons[i : i + 5] for i in range(0, len(buttons), 5)]
-    return InlineKeyboardMarkup(rows)
-
-
-_THUMB_MAX_SIZE = 320  # Telegram max thumbnail dimension (px)
-_THUMB_QUALITY = 80  # JPEG quality for resized thumbnails
-
-
-def _resize_thumbnail(raw: bytes) -> bytes:
-    """Resize cover art to fit Telegram's 320x320 thumbnail limit.
-
-    Returns JPEG bytes. If the image is already small enough, returns it as-is.
-    """
-    img = Image.open(io.BytesIO(raw))
-    if img.width <= _THUMB_MAX_SIZE and img.height <= _THUMB_MAX_SIZE:
-        return raw
-    img.thumbnail((_THUMB_MAX_SIZE, _THUMB_MAX_SIZE), Image.Resampling.LANCZOS)
-    buf = io.BytesIO()
-    img.save(buf, format="JPEG", quality=_THUMB_QUALITY)
-    return buf.getvalue()
-
-
-def _extract_thumbnail(file_path: Path) -> InputFile | None:
-    """Extract embedded cover art from an audio file as an InputFile for Telegram.
-
-    Supports M4A (covr tag), Opus/Vorbis (metadata_block_picture), and MP3 (APIC).
-    Images are resized to max 320x320 to comply with Telegram's thumbnail limits.
-    """
-    try:
-        audio = mutagen.File(file_path)  # type: ignore[attr-defined]
-        if audio is None or audio.tags is None:
-            return None
-        tags = audio.tags
-        raw: bytes | None = None
-        # M4A / MP4: covr tag
-        if hasattr(tags, "get") and "covr" in tags and tags["covr"]:
-            raw = bytes(tags["covr"][0])
-        # Vorbis (Opus/OGG): metadata_block_picture
-        elif hasattr(tags, "get") and "metadata_block_picture" in tags:
-            import base64
-
-            from mutagen.flac import Picture
-
-            pic_data = base64.b64decode(tags["metadata_block_picture"][0])
-            picture = Picture(pic_data)  # type: ignore[no-untyped-call]
-            raw = picture.data
-        # ID3 (MP3): APIC frames
-        elif hasattr(tags, "getall"):
-            apic_frames = tags.getall("APIC")
-            if apic_frames:
-                raw = apic_frames[0].data
-
-        if raw is None:
-            return None
-        resized = _resize_thumbnail(raw)
-        return InputFile(io.BytesIO(resized), filename="cover.jpg")
-    except Exception:
-        logger.debug("Could not extract thumbnail from %s", file_path, exc_info=True)
-    return None
 
 
 async def _send_chapter_index(
