@@ -56,11 +56,28 @@ services:
     cap_drop:
       - ALL
     healthcheck:
-      test: ["CMD-SHELL", "grep -q src.main /proc/1/cmdline"]
+      # Observability only: healthy = heartbeat file refreshed recently (the
+      # bot rewrites it after each successful getMe). Actual self-recovery is
+      # the in-process watchdog thread, which force-exits on a stale heartbeat
+      # so the restart policy kicks in — Compose does not restart a container
+      # just for being "unhealthy". Still far better than the old PID-only
+      # check, which reported "healthy" while the bot was actually dead.
+      # Deadline mirrors the watchdog (interval*max_failures + probe_timeout),
+      # read from the same HEARTBEAT_* env so it tracks config; the defaults
+      # below match src/config.py.
+      test:
+        - CMD-SHELL
+        - >-
+          python -c "import os,time,pathlib,sys;
+          i=float(os.getenv('HEARTBEAT_INTERVAL_SECONDS','30'));
+          f=float(os.getenv('HEARTBEAT_MAX_FAILURES','3'));
+          t=float(os.getenv('HEARTBEAT_PROBE_TIMEOUT_SECONDS','20'));
+          p=pathlib.Path('/tmp/bot_heartbeat');
+          sys.exit(0 if p.is_file() and time.time()-float(p.read_text())<i*f+t else 1)"
       interval: 30s
       timeout: 5s
       retries: 3
-      start_period: 30s
+      start_period: 60s
     mem_limit: 512m
     cpus: "1.5"
     # No ports — bot only needs outbound connections

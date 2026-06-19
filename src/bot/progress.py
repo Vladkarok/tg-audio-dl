@@ -9,7 +9,7 @@ import time
 from enum import Enum
 
 from telegram import Bot
-from telegram.error import BadRequest
+from telegram.error import BadRequest, TelegramError
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +78,10 @@ class ProgressManager:
         self._reply_to_message_id = reply_to_message_id
         self._message_id: int | None = None
         self._last_edit_time: float = 0.0
+        # True while an edit_message_text call is awaiting a response. Bounds
+        # concurrent edits to one so a slow/stalled Bot API cannot drain the
+        # HTTPX connection pool (the failure that took the bot down once).
+        self._edit_in_flight: bool = False
         self._playlist_track: int | None = None
         self._playlist_total: int | None = None
         self._playlist_track_title: str | None = None
@@ -251,42 +255,48 @@ class ProgressManager:
     # ------------------------------------------------------------------
 
     async def _maybe_edit(self) -> None:
-        """Edit the message unless we are within the debounce window.
+        """Edit the message now, or schedule a trailing flush if we cannot.
 
-        If the window is active, schedule a deferred flush so that the
-        latest state is always sent — even when no further update arrives.
+        We defer when inside the debounce window OR when an edit is already in
+        flight. Bounding concurrent edits to one is what stops a slow Bot API
+        from piling up edit calls and exhausting the HTTPX connection pool; the
+        deferred flush still guarantees the latest state is sent afterwards.
         """
         if self._message_id is None:
             return
 
         now = time.monotonic()
         elapsed = now - self._last_edit_time
-        if elapsed < _DEBOUNCE_SECONDS:
-            # Schedule a deferred flush only if one is not already pending.
-            # Sleep only for the remaining time so the flush happens at the
-            # end of the current window, not a full debounce period later.
-            remaining = _DEBOUNCE_SECONDS - elapsed
-            if self._deferred_flush_task is None or self._deferred_flush_task.done():
-                self._deferred_flush_task = asyncio.create_task(
-                    self._deferred_flush(remaining)
-                )
+        if elapsed < _DEBOUNCE_SECONDS or self._edit_in_flight:
+            self._schedule_deferred_flush(max(0.0, _DEBOUNCE_SECONDS - elapsed))
             return
 
         await self._flush_edit()
 
+    def _schedule_deferred_flush(self, delay: float) -> None:
+        """Ensure exactly one trailing flush is pending."""
+        if self._deferred_flush_task is None or self._deferred_flush_task.done():
+            self._deferred_flush_task = asyncio.create_task(self._deferred_flush(delay))
+
     async def _deferred_flush(self, delay: float) -> None:
-        """Wait *delay* seconds then flush the message."""
+        """Wait out the debounce window and any in-flight edit, then flush."""
         try:
             await asyncio.sleep(delay)
+            while self._edit_in_flight:
+                await asyncio.sleep(_DEBOUNCE_SECONDS)
             self._deferred_flush_task = None
             await self._flush_edit()
         except asyncio.CancelledError:
             pass
 
     async def _flush_edit(self) -> None:
-        """Perform the actual edit_message_text call."""
-        if self._message_id is None:
+        """Perform the actual edit_message_text call — one at a time."""
+        if self._message_id is None or self._edit_in_flight:
             return
+        self._edit_in_flight = True
+        # Advance the debounce clock BEFORE awaiting so concurrent callers
+        # defer instead of each launching their own edit while this one runs.
+        self._last_edit_time = time.monotonic()
         try:
             await self._bot.edit_message_text(
                 chat_id=self._chat_id,
@@ -294,9 +304,12 @@ class ProgressManager:
                 text=self.render(),
             )
         except BadRequest as exc:
-            if "message is not modified" in str(exc).lower():
-                return
-            logger.warning("Failed to edit progress message: %s", exc)
-            # Non-fatal: progress update failed but download continues
-            return
-        self._last_edit_time = time.monotonic()
+            if "message is not modified" not in str(exc).lower():
+                logger.warning("Failed to edit progress message: %s", exc)
+        except TelegramError as exc:
+            # Network / pool / timeout — never let a progress edit crash the
+            # download or the event loop.
+            logger.warning("Progress edit failed (non-fatal): %s", exc)
+        finally:
+            self._edit_in_flight = False
+            self._last_edit_time = time.monotonic()

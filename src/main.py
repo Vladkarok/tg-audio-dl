@@ -1,6 +1,12 @@
+import asyncio
 import logging
+import os
+import threading
+import time
+from pathlib import Path
 from typing import Any
 
+from telegram import Bot
 from telegram.ext import (
     Application,
     ApplicationBuilder,
@@ -24,6 +30,104 @@ from src.cache import CompositeCache, create_cache
 from src.cache.disk import cleanup_stale_tmp
 from src.config import Settings, get_settings
 from src.downloader.client import AudioDownloader
+
+# Heartbeat file the Docker healthcheck reads. Lives on the container's /tmp
+# tmpfs (writable under the read-only rootfs); must stay in sync with the path
+# in the bot service healthcheck in docker-compose.yml.
+HEARTBEAT_PATH = Path("/tmp/bot_heartbeat")  # noqa: S108 — container tmpfs, by design
+
+
+async def _error_handler(_update: object, context: CallbackContext) -> None:  # type: ignore[type-arg]
+    """Log otherwise-unhandled errors raised while processing updates."""
+    logging.getLogger(__name__).error(
+        "Unhandled error while processing update", exc_info=context.error
+    )
+
+
+def _record_heartbeat() -> None:
+    """Refresh the heartbeat file with the current time."""
+    HEARTBEAT_PATH.write_text(str(time.time()))
+
+
+def _heartbeat_age(now: float | None = None) -> float | None:
+    """Seconds since the heartbeat was last refreshed, or None if absent."""
+    try:
+        mtime = HEARTBEAT_PATH.stat().st_mtime
+    except OSError:
+        return None
+    return (time.time() if now is None else now) - mtime
+
+
+def _trigger_restart() -> None:  # pragma: no cover - terminates the process
+    """Force a non-zero exit so Docker's restart policy recovers the bot."""
+    os._exit(1)
+
+
+async def _heartbeat_probe(bot: Bot, timeout: float) -> bool:
+    """Return True if the bot can reach Telegram within *timeout* seconds."""
+    try:
+        await asyncio.wait_for(bot.get_me(), timeout=timeout)
+    except Exception as exc:
+        logging.getLogger(__name__).warning("Heartbeat probe failed: %s", exc)
+        return False
+    return True
+
+
+async def _heartbeat_loop(bot: Bot, interval: float, probe_timeout: float) -> None:
+    """Refresh the heartbeat each time the bot can still reach Telegram. Runs
+    on the event loop; the off-loop watchdog thread handles termination, so a
+    failed probe simply stops the refresh and lets the heartbeat go stale."""
+    while True:
+        if await _heartbeat_probe(bot, probe_timeout):
+            _record_heartbeat()
+        await asyncio.sleep(interval)
+
+
+def _watchdog_thread(  # pragma: no cover - loops until it kills the process
+    max_stale: float, check_interval: float
+) -> None:
+    """Force a restart when the heartbeat goes stale. Runs in a plain thread,
+    off the event loop, so it still fires even if the loop is fully wedged —
+    Docker Compose does not restart merely-unhealthy containers, so an
+    in-process terminator is required to actually recover the service."""
+    while True:
+        time.sleep(check_interval)
+        age = _heartbeat_age()
+        if age is not None and age > max_stale:
+            logging.getLogger(__name__).critical(
+                "Heartbeat stale for %.0fs (> %.0fs) — forcing restart",
+                age,
+                max_stale,
+            )
+            _trigger_restart()
+
+
+def _start_heartbeat(
+    application: Application[Any, Any, Any, Any, Any, Any], settings: Settings
+) -> None:
+    """Record an initial heartbeat, launch the async refresher, and start the
+    off-loop watchdog thread that terminates the process if it goes stale."""
+    _record_heartbeat()
+    application.bot_data["_heartbeat_task"] = asyncio.create_task(
+        _heartbeat_loop(
+            application.bot,
+            settings.HEARTBEAT_INTERVAL_SECONDS,
+            settings.HEARTBEAT_PROBE_TIMEOUT_SECONDS,
+        )
+    )
+    # Tolerate up to max_failures missed cycles plus one slow-but-successful
+    # probe (≤ probe_timeout) before declaring the heartbeat stale, so a small
+    # interval relative to the probe timeout cannot kill a healthy instance.
+    max_stale = (
+        settings.HEARTBEAT_INTERVAL_SECONDS * settings.HEARTBEAT_MAX_FAILURES
+        + settings.HEARTBEAT_PROBE_TIMEOUT_SECONDS
+    )
+    threading.Thread(
+        target=_watchdog_thread,
+        args=(max_stale, settings.HEARTBEAT_INTERVAL_SECONDS),
+        name="heartbeat-watchdog",
+        daemon=True,
+    ).start()
 
 
 def setup_logging(log_level: str) -> None:
@@ -96,6 +200,9 @@ async def post_init(application: Application[Any, Any, Any, Any, Any, Any]) -> N
             name="cleanup_stale_tmp",
         )
 
+    # Liveness watchdog — restarts the bot if it can no longer reach Telegram.
+    _start_heartbeat(application, settings)
+
     logging.getLogger(__name__).info("Bot initialized and ready")
 
 
@@ -106,6 +213,9 @@ def build_application(settings: Settings) -> Application[Any, Any, Any, Any, Any
         .read_timeout(300)
         .write_timeout(300)
         .connect_timeout(30)
+        # Fail fast when no pooled connection is free instead of blocking
+        # forever; the in-flight edit guard keeps the pool from filling up.
+        .pool_timeout(settings.POOL_TIMEOUT_SECONDS)
     )
 
     # Use local Bot API server if configured
@@ -126,6 +236,9 @@ def build_application(settings: Settings) -> Application[Any, Any, Any, Any, Any
     app.add_handler(CommandHandler("chapters", handle_chapters))
     app.add_handler(CallbackQueryHandler(handle_chapter_page_callback, pattern=r"^cp:"))
     app.add_handler(MessageHandler(MediaURLFilter(), handle_url))
+
+    # Catch-all so pool/network errors are logged, not silently swallowed.
+    app.add_error_handler(_error_handler)
 
     return app
 

@@ -27,6 +27,10 @@ def clear_env_vars(monkeypatch):
         "DOWNLOAD_TIMEOUT_SECONDS",
         "TMP_MAX_AGE_SECONDS",
         "TMP_CLEANUP_INTERVAL_SECONDS",
+        "POOL_TIMEOUT_SECONDS",
+        "HEARTBEAT_INTERVAL_SECONDS",
+        "HEARTBEAT_PROBE_TIMEOUT_SECONDS",
+        "HEARTBEAT_MAX_FAILURES",
     ]
     for var in vars_to_clear:
         monkeypatch.delenv(var, raising=False)

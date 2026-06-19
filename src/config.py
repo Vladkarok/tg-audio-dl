@@ -53,6 +53,18 @@ class Settings(BaseSettings):
     TMP_CLEANUP_INTERVAL_SECONDS: int = 900
     EXPERIMENTAL_CHAPTER_PAGES_ENABLED: bool = False
 
+    # Telegram HTTPX connection pool: how long a request waits for a free
+    # connection before failing instead of blocking forever.
+    POOL_TIMEOUT_SECONDS: float = 20.0
+
+    # Liveness watchdog. The bot periodically proves it can reach Telegram
+    # (getMe) and refreshes a heartbeat file the Docker healthcheck reads.
+    # After this many consecutive failures it force-exits so the container
+    # restart policy can recover a wedged event loop / exhausted pool.
+    HEARTBEAT_INTERVAL_SECONDS: int = 30
+    HEARTBEAT_PROBE_TIMEOUT_SECONDS: int = 20
+    HEARTBEAT_MAX_FAILURES: int = 3
+
     @classmethod
     def settings_customise_sources(
         cls,
@@ -139,6 +151,34 @@ class Settings(BaseSettings):
     def validate_tmp_cleanup_interval(cls, v: int) -> int:
         if v < 60:
             raise ValueError("TMP_CLEANUP_INTERVAL_SECONDS must be at least 60")
+        return v
+
+    @field_validator("POOL_TIMEOUT_SECONDS")
+    @classmethod
+    def validate_pool_timeout(cls, v: float) -> float:
+        if v <= 0:
+            raise ValueError("POOL_TIMEOUT_SECONDS must be positive")
+        return v
+
+    @field_validator("HEARTBEAT_INTERVAL_SECONDS")
+    @classmethod
+    def validate_heartbeat_interval(cls, v: int) -> int:
+        if v < 5:
+            raise ValueError("HEARTBEAT_INTERVAL_SECONDS must be at least 5")
+        return v
+
+    @field_validator("HEARTBEAT_PROBE_TIMEOUT_SECONDS")
+    @classmethod
+    def validate_heartbeat_probe_timeout(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError("HEARTBEAT_PROBE_TIMEOUT_SECONDS must be at least 1")
+        return v
+
+    @field_validator("HEARTBEAT_MAX_FAILURES")
+    @classmethod
+    def validate_heartbeat_max_failures(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError("HEARTBEAT_MAX_FAILURES must be at least 1")
         return v
 
     @field_validator("LOG_LEVEL")

@@ -509,3 +509,61 @@ class TestNumericValidators:
 
         s = Settings()
         assert s.TMP_CLEANUP_INTERVAL_SECONDS == 300
+
+
+class TestHeartbeatAndPoolConfig:
+    """Connection-pool timeout and liveness-watchdog settings."""
+
+    @pytest.fixture(autouse=True)
+    def _set_token(self, monkeypatch):
+        monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token-123")
+
+    def test_defaults(self):
+        from src.config import Settings
+
+        s = Settings()
+        assert s.POOL_TIMEOUT_SECONDS == 20.0
+        assert s.HEARTBEAT_INTERVAL_SECONDS == 30
+        assert s.HEARTBEAT_PROBE_TIMEOUT_SECONDS == 20
+        assert s.HEARTBEAT_MAX_FAILURES == 3
+
+    def test_pool_timeout_must_be_positive(self, monkeypatch):
+        monkeypatch.setenv("POOL_TIMEOUT_SECONDS", "0")
+        from src.config import Settings
+
+        with pytest.raises((ValidationError, ValueError)):
+            Settings()
+
+    def test_heartbeat_interval_too_low_rejected(self, monkeypatch):
+        monkeypatch.setenv("HEARTBEAT_INTERVAL_SECONDS", "1")
+        from src.config import Settings
+
+        with pytest.raises((ValidationError, ValueError)):
+            Settings()
+
+    def test_heartbeat_probe_timeout_too_low_rejected(self, monkeypatch):
+        monkeypatch.setenv("HEARTBEAT_PROBE_TIMEOUT_SECONDS", "0")
+        from src.config import Settings
+
+        with pytest.raises((ValidationError, ValueError)):
+            Settings()
+
+    def test_heartbeat_max_failures_too_low_rejected(self, monkeypatch):
+        monkeypatch.setenv("HEARTBEAT_MAX_FAILURES", "0")
+        from src.config import Settings
+
+        with pytest.raises((ValidationError, ValueError)):
+            Settings()
+
+    def test_valid_overrides_accepted(self, monkeypatch):
+        monkeypatch.setenv("POOL_TIMEOUT_SECONDS", "5.5")
+        monkeypatch.setenv("HEARTBEAT_INTERVAL_SECONDS", "15")
+        monkeypatch.setenv("HEARTBEAT_PROBE_TIMEOUT_SECONDS", "10")
+        monkeypatch.setenv("HEARTBEAT_MAX_FAILURES", "5")
+        from src.config import Settings
+
+        s = Settings()
+        assert s.POOL_TIMEOUT_SECONDS == 5.5
+        assert s.HEARTBEAT_INTERVAL_SECONDS == 15
+        assert s.HEARTBEAT_PROBE_TIMEOUT_SECONDS == 10
+        assert s.HEARTBEAT_MAX_FAILURES == 5

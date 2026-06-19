@@ -1,8 +1,9 @@
 """Tests for src/bot/progress.py — written first (TDD RED phase)."""
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
-from telegram.error import BadRequest
+from telegram.error import BadRequest, TimedOut
 
 from src.bot.progress import ProgressManager, Step, StepStatus
 
@@ -292,3 +293,57 @@ class TestUploadAnimation:
         pm._message_id = 1
         # Should not raise
         await pm.stop_upload_animation()
+
+
+class TestEditConcurrencyGuard:
+    """Regression tests for the connection-pool-exhaustion fix."""
+
+    async def test_slow_edit_does_not_pile_up(self):
+        """While one edit is in flight, further updates must not launch more
+        edits — otherwise a slow Bot API drains the HTTPX connection pool."""
+        bot = make_bot()
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def slow_edit(**_kwargs):
+            started.set()
+            await release.wait()
+
+        bot.edit_message_text = AsyncMock(side_effect=slow_edit)
+        pm = ProgressManager(bot, chat_id=1, reply_to_message_id=10)
+        await pm.create()
+        bot.edit_message_text.reset_mock()
+        pm._last_edit_time = 0.0  # allow the first flush immediately
+
+        # First update starts an edit that blocks mid-flight.
+        first = asyncio.create_task(pm.set_downloading_progress(5.0))
+        await asyncio.wait_for(started.wait(), timeout=1)
+
+        # Many more updates arrive while that edit is still in flight.
+        for pct in range(10, 60):
+            await pm.set_downloading_progress(float(pct))
+
+        # Still exactly one edit in flight — no pile-up.
+        assert bot.edit_message_text.call_count == 1
+        assert pm._edit_in_flight is True
+
+        # Let the in-flight edit finish and clean up the trailing flush.
+        release.set()
+        await asyncio.wait_for(first, timeout=1)
+        if pm._deferred_flush_task is not None:
+            pm._deferred_flush_task.cancel()
+
+    async def test_edit_failure_is_non_fatal(self):
+        """A pool/network error during an edit must not raise and must clear
+        the in-flight flag so later edits can still proceed."""
+        bot = make_bot()
+        bot.edit_message_text = AsyncMock(side_effect=TimedOut("pool exhausted"))
+        pm = ProgressManager(bot, chat_id=1, reply_to_message_id=10)
+        await pm.create()
+        pm._last_edit_time = 0.0
+
+        # Must not raise.
+        await pm.set_step(Step.DOWNLOADING, StepStatus.ACTIVE)
+
+        assert pm._edit_in_flight is False
+        bot.edit_message_text.assert_called_once()
