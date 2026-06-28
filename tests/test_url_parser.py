@@ -207,6 +207,73 @@ class TestSingleShorts:
 
 
 # ===========================================================================
+# SINGLE — /live/<id>, /embed/<id>, /v/<id> path forms
+# ===========================================================================
+
+
+class TestSingleLivePermalink:
+    """Live-stream / premiere permalinks: youtube.com/live/ID."""
+
+    def test_live_url_type_is_single(self):
+        result = parse_youtube_url(f"https://www.youtube.com/live/{VIDEO_ID}")
+        assert result is not None
+        assert result.url_type == URLType.SINGLE
+
+    def test_live_video_id_extracted(self):
+        result = parse_youtube_url(f"https://www.youtube.com/live/{VIDEO_ID}")
+        assert result.video_id == VIDEO_ID
+
+    def test_live_canonical_url(self):
+        result = parse_youtube_url(f"https://www.youtube.com/live/{VIDEO_ID}")
+        assert result.canonical_url == canonical_single(VIDEO_ID)
+
+    def test_live_with_tracking_param(self):
+        result = parse_youtube_url(f"https://www.youtube.com/live/{VIDEO_ID}?si=abc")
+        assert result is not None
+        assert result.video_id == VIDEO_ID
+        assert result.canonical_url == canonical_single(VIDEO_ID)
+
+
+class TestSingleEmbed:
+    """Embed permalinks: youtube.com/embed/ID and old /v/ID."""
+
+    def test_embed_url_type_is_single(self):
+        result = parse_youtube_url(f"https://www.youtube.com/embed/{VIDEO_ID}")
+        assert result is not None
+        assert result.url_type == URLType.SINGLE
+
+    def test_embed_video_id_extracted(self):
+        result = parse_youtube_url(f"https://www.youtube.com/embed/{VIDEO_ID}")
+        assert result.video_id == VIDEO_ID
+
+    def test_embed_canonical_url(self):
+        result = parse_youtube_url(f"https://www.youtube.com/embed/{VIDEO_ID}")
+        assert result.canonical_url == canonical_single(VIDEO_ID)
+
+    def test_old_v_path_video_id_extracted(self):
+        result = parse_youtube_url(f"https://www.youtube.com/v/{VIDEO_ID}")
+        assert result is not None
+        assert result.video_id == VIDEO_ID
+        assert result.canonical_url == canonical_single(VIDEO_ID)
+
+
+class TestNoCookieHost:
+    """Privacy-frontend embeds: www.youtube-nocookie.com."""
+
+    def test_nocookie_embed_is_single(self):
+        result = parse_youtube_url(f"https://www.youtube-nocookie.com/embed/{VIDEO_ID}")
+        assert result is not None
+        assert result.url_type == URLType.SINGLE
+        assert result.video_id == VIDEO_ID
+        assert result.canonical_url == canonical_single(VIDEO_ID)
+
+    def test_nocookie_bare_host_is_single(self):
+        result = parse_youtube_url(f"https://youtube-nocookie.com/embed/{VIDEO_ID}")
+        assert result is not None
+        assert result.video_id == VIDEO_ID
+
+
+# ===========================================================================
 # SINGLE — music.youtube.com (case 6)
 # ===========================================================================
 
@@ -545,6 +612,18 @@ class TestExtractYouTubeURLs:
 
     def test_text_that_is_a_url(self):
         text = f"https://www.youtube.com/watch?v={VIDEO_ID}"
+        results = _extract_youtube_only(text)
+        assert len(results) == 1
+        assert results[0].video_id == VIDEO_ID
+
+    def test_live_url_extracted_from_text(self):
+        text = f"watch live: https://www.youtube.com/live/{VIDEO_ID} now"
+        results = _extract_youtube_only(text)
+        assert len(results) == 1
+        assert results[0].video_id == VIDEO_ID
+
+    def test_nocookie_url_extracted_from_text(self):
+        text = f"embed https://www.youtube-nocookie.com/embed/{VIDEO_ID} here"
         results = _extract_youtube_only(text)
         assert len(results) == 1
         assert results[0].video_id == VIDEO_ID

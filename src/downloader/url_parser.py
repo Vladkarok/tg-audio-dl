@@ -4,7 +4,8 @@ YouTube classification rules (in priority order):
 1. RADIO_MIX  — list=RD*, list=RDMM*, or start_radio=1 with a v= param
 2. PLAYLIST   — /playlist?list=PL* (no v=)
 3. SINGLE     — v= with list=PL*/FL*/UU* (user shared specific video)
-4. SINGLE     — bare v=, youtu.be/<id>, shorts/<id>
+4. SINGLE     — bare v=, youtu.be/<id>, shorts/<id>, live/<id>,
+                embed/<id>, v/<id> (incl. youtube-nocookie.com)
 
 SoundCloud classification rules:
 1. PLAYLIST   — /artist/sets/setname
@@ -61,12 +62,14 @@ _YOUTUBE_HOSTS: frozenset[str] = frozenset(
         "m.youtube.com",
         "music.youtube.com",
         "youtu.be",
+        "www.youtube-nocookie.com",
+        "youtube-nocookie.com",
     }
 )
 
 # Regex to find candidate YouTube URLs inside free-form text
 _YT_URL_RE = re.compile(
-    r"https?://(?:www\.|m\.|music\.)?(?:youtube\.com|youtu\.be)(?::\d+)?"
+    r"https?://(?:www\.|m\.|music\.)?(?:youtube(?:-nocookie)?\.com|youtu\.be)(?::\d+)?"
     r"(?:/[^\s\"'<>]*)?"
     r"(?:\?[^\s\"'<>]*)?"
 )
@@ -130,10 +133,14 @@ def _first_param(params: dict[str, list[str]], key: str) -> str | None:
 
 
 def _extract_video_id_from_path(path: str) -> str | None:
-    """Extract video ID from /shorts/<id> or /youtu.be/<id> path segments."""
-    shorts_match = re.fullmatch(r"/shorts/([A-Za-z0-9_-]{11})", path)
-    if shorts_match:
-        return shorts_match.group(1)
+    """Extract video ID from path-based YouTube URLs.
+
+    Handles /shorts/<id>, /live/<id>, /embed/<id>, /v/<id>, and the bare
+    youtu.be/<id> form. All carry the 11-char video ID in the same position.
+    """
+    prefixed_match = re.fullmatch(r"/(?:shorts|live|embed|v)/([A-Za-z0-9_-]{11})", path)
+    if prefixed_match:
+        return prefixed_match.group(1)
     bare_match = re.fullmatch(r"/([A-Za-z0-9_-]{11})", path)
     if bare_match:
         return bare_match.group(1)
