@@ -273,6 +273,74 @@ class TestNoCookieHost:
         assert result.video_id == VIDEO_ID
 
 
+class TestEmbedPlaylistSentinel:
+    """/embed/videoseries?list=... is a playlist, not a video."""
+
+    def test_embed_videoseries_is_playlist(self):
+        result = parse_youtube_url(
+            f"https://www.youtube.com/embed/videoseries?list={PLAYLIST_ID}"
+        )
+        assert result is not None
+        assert result.url_type == URLType.PLAYLIST
+        assert result.playlist_id == PLAYLIST_ID
+        assert result.video_id is None
+        assert result.canonical_url == canonical_playlist(PLAYLIST_ID)
+
+    def test_embed_videoseries_on_nocookie_is_playlist(self):
+        result = parse_youtube_url(
+            f"https://www.youtube-nocookie.com/embed/videoseries?list={PLAYLIST_ID}"
+        )
+        assert result is not None
+        assert result.url_type == URLType.PLAYLIST
+        assert result.playlist_id == PLAYLIST_ID
+
+    def test_embed_videoseries_without_list_is_none(self):
+        result = parse_youtube_url("https://www.youtube.com/embed/videoseries")
+        assert result is None
+
+    def test_embed_real_id_with_list_is_single(self):
+        result = parse_youtube_url(
+            f"https://www.youtube.com/embed/{VIDEO_ID}?list={PLAYLIST_ID}"
+        )
+        assert result is not None
+        assert result.url_type == URLType.SINGLE
+        assert result.video_id == VIDEO_ID
+
+
+class TestPathFormTrailingSlash:
+    """Trailing slash on path-based forms must still classify."""
+
+    def test_embed_trailing_slash_is_single(self):
+        result = parse_youtube_url(f"https://www.youtube.com/embed/{VIDEO_ID}/")
+        assert result is not None
+        assert result.url_type == URLType.SINGLE
+        assert result.video_id == VIDEO_ID
+
+    def test_live_trailing_slash_is_single(self):
+        result = parse_youtube_url(f"https://www.youtube.com/live/{VIDEO_ID}/")
+        assert result is not None
+        assert result.video_id == VIDEO_ID
+
+
+class TestStartRadioValue:
+    """start_radio is only a radio trigger when its value is 1."""
+
+    def test_start_radio_zero_is_not_radio(self):
+        result = parse_youtube_url(
+            f"https://www.youtube.com/embed/{VIDEO_ID}?start_radio=0"
+        )
+        assert result is not None
+        assert result.url_type == URLType.SINGLE
+        assert result.video_id == VIDEO_ID
+
+    def test_start_radio_one_is_radio(self):
+        result = parse_youtube_url(
+            f"https://www.youtube.com/watch?v={VIDEO_ID}&start_radio=1"
+        )
+        assert result is not None
+        assert result.url_type == URLType.RADIO_MIX
+
+
 # ===========================================================================
 # SINGLE — music.youtube.com (case 6)
 # ===========================================================================

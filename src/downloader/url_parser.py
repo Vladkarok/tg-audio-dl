@@ -137,10 +137,15 @@ def _extract_video_id_from_path(path: str) -> str | None:
 
     Handles /shorts/<id>, /live/<id>, /embed/<id>, /v/<id>, and the bare
     youtu.be/<id> form. All carry the 11-char video ID in the same position.
+
+    ``/embed/videoseries`` is the playlist-embed sentinel, not a video — it
+    happens to be 11 url-safe chars but maps to no real video, so it returns
+    None and is handled as a playlist by the caller.
     """
     prefixed_match = re.fullmatch(r"/(?:shorts|live|embed|v)/([A-Za-z0-9_-]{11})", path)
     if prefixed_match:
-        return prefixed_match.group(1)
+        vid = prefixed_match.group(1)
+        return None if vid == "videoseries" else vid
     bare_match = re.fullmatch(r"/([A-Za-z0-9_-]{11})", path)
     if bare_match:
         return bare_match.group(1)
@@ -211,15 +216,18 @@ def parse_youtube_url(raw_url: str) -> ParsedURL | None:
     except Exception:  # noqa: BLE001
         return None
 
+    # Normalise a trailing slash so /embed/<id>/ matches like /embed/<id>
+    path = parsed.path.rstrip("/")
+
     video_id: str | None = _first_param(params, "v")
     list_id: str | None = _first_param(params, "list")
 
     if not video_id:
-        video_id = _extract_video_id_from_path(parsed.path)
+        video_id = _extract_video_id_from_path(path)
 
     # 1. RADIO_MIX
     is_radio = (list_id is not None and list_id.startswith("RD")) or (
-        "start_radio" in params
+        _first_param(params, "start_radio") == "1"
     )
     if is_radio:
         if not _is_valid_video_id(video_id):
@@ -233,12 +241,10 @@ def parse_youtube_url(raw_url: str) -> ParsedURL | None:
             platform=Platform.YOUTUBE,
         )
 
-    # 2. PLAYLIST
+    # 2. PLAYLIST — /playlist?list=... or the /embed/videoseries?list=... embed
+    is_playlist_path = path == "/playlist" or path == "/embed/videoseries"
     is_playlist = (
-        parsed.path == "/playlist"
-        and list_id
-        and not video_id
-        and _is_valid_playlist_id(list_id)
+        is_playlist_path and list_id and not video_id and _is_valid_playlist_id(list_id)
     )
     if is_playlist and list_id is not None:
         return ParsedURL(
