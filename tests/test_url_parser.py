@@ -826,6 +826,14 @@ class TestParseSoundCloudSingle:
         result = parse_soundcloud_url(f"https://soundcloud.com/{SC_ARTIST}/{SC_TRACK}")
         assert re.fullmatch(r"[A-Za-z0-9_-]{1,64}", result.video_id)
 
+    def test_long_slugs_sharing_prefix_do_not_collide(self):
+        """Two slugs sharing the same 64-char prefix get distinct cache keys."""
+        artist = "a" * 60
+        r1 = parse_soundcloud_url(f"https://soundcloud.com/{artist}/track-one-xxxxx")
+        r2 = parse_soundcloud_url(f"https://soundcloud.com/{artist}/track-two-yyyyy")
+        assert r1.video_id != r2.video_id
+        assert len(r1.video_id) <= 64 and len(r2.video_id) <= 64
+
     def test_canonical_url_is_original(self):
         url = f"https://soundcloud.com/{SC_ARTIST}/{SC_TRACK}"
         result = parse_soundcloud_url(url)

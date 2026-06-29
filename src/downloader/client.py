@@ -25,7 +25,12 @@ from urllib.parse import urlparse as _urlparse
 
 import yt_dlp
 
-from src.downloader.url_parser import ParsedURL, Platform, URLType
+from src.downloader.url_parser import (
+    ParsedURL,
+    Platform,
+    URLType,
+    parse_soundcloud_url,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +40,13 @@ logger = logging.getLogger(__name__)
 
 # Accepts YouTube 11-char IDs, SoundCloud numeric IDs, and sc_slug cache keys
 _TRACK_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+
+# Audio file discovery. Preferred order is tried by exact name first; the wider
+# set guards the glob fallback so sidecars (.jpg/.info.json/.part) are ignored.
+_PREFERRED_AUDIO_EXTS: tuple[str, ...] = ("m4a", "webm", "opus", "mp3", "ogg")
+_AUDIO_EXTS: frozenset[str] = frozenset(
+    {*_PREFERRED_AUDIO_EXTS, "aac", "flac", "wav", "oga", "mka"}
+)
 
 
 # (start_seconds, title)
@@ -381,6 +393,7 @@ class AudioDownloader:
             return await self._download_playlist(
                 parsed_url.canonical_url,
                 max_tracks,
+                parsed_url.platform,
                 progress_callback,
                 loop,
                 track_start_callback=track_start_callback,
@@ -458,12 +471,14 @@ class AudioDownloader:
         self,
         url: str,
         max_tracks: int,
+        platform: Platform,
         loop: asyncio.AbstractEventLoop,
     ) -> list[tuple[str, str]]:
-        """Fetch playlist entry IDs and titles without downloading audio.
+        """Fetch playlist entry refs and titles without downloading audio.
 
-        Uses yt-dlp's extract_flat mode for a fast single API call.
-        Returns a list of (track_id, title) pairs capped at max_tracks.
+        Uses yt-dlp's extract_flat mode for a fast single API call. Returns a
+        list of (track_ref, title) pairs capped at max_tracks, where track_ref
+        is a bare YouTube video ID or a full track URL (SoundCloud).
         """
         opts: dict[str, Any] = {
             "quiet": True,
@@ -490,16 +505,26 @@ class AudioDownloader:
         for entry in raw_entries:
             if not isinstance(entry, dict):
                 continue
-            entry_id = entry.get("id") or entry.get("url", "")
-            if not entry_id or not _TRACK_ID_RE.fullmatch(entry_id):
-                # For entries where id is a full URL (SoundCloud), use url field
-                entry_url = entry.get("url", "")
-                if entry_url.startswith(("http://", "https://")):
-                    entry_id = entry_url
-                else:
+
+            if platform == Platform.SOUNDCLOUD:
+                # SoundCloud flat entries carry a numeric `id` that would be
+                # mistaken for a YouTube video ID (it matches _TRACK_ID_RE) and
+                # turned into a youtube.com/watch URL. Always download by URL.
+                entry_ref = entry.get("url") or entry.get("webpage_url") or ""
+                if not entry_ref.startswith(("http://", "https://")):
                     continue
-            title = entry.get("title") or entry_id
-            entries.append((entry_id, title))
+            else:
+                entry_ref = entry.get("id") or entry.get("url", "")
+                if not entry_ref or not _TRACK_ID_RE.fullmatch(entry_ref):
+                    # id is a full URL (non-YouTube fallback) — use url field
+                    entry_url = entry.get("url", "")
+                    if entry_url.startswith(("http://", "https://")):
+                        entry_ref = entry_url
+                    else:
+                        continue
+
+            title = entry.get("title") or entry_ref
+            entries.append((entry_ref, title))
 
         return entries[:max_tracks]
 
@@ -507,20 +532,21 @@ class AudioDownloader:
         self,
         url: str,
         max_tracks: int,
+        platform: Platform,
         progress_callback: ProgressCallback | None,
         loop: asyncio.AbstractEventLoop,
         track_start_callback: TrackStartCallback | None = None,
         track_ready_callback: TrackReadyCallback | None = None,
     ) -> list[DownloadResult]:
         """Download each playlist track individually, firing callbacks per track."""
-        entries = await self._fetch_playlist_metadata(url, max_tracks, loop)
+        entries = await self._fetch_playlist_metadata(url, max_tracks, platform, loop)
         if not entries:
             raise DownloadError("Playlist is empty or unavailable")
 
         total = len(entries)
         results: list[DownloadResult] = []
 
-        for idx, (track_id, title) in enumerate(entries, start=1):
+        for idx, (track_ref, title) in enumerate(entries, start=1):
             if track_start_callback is not None:
                 try:
                     await track_start_callback(idx, total, title)
@@ -529,28 +555,34 @@ class AudioDownloader:
                         "track_start_callback raised for track %d/%d", idx, total
                     )
 
-            # Determine the URL to pass to yt-dlp
-            if track_id.startswith(("http://", "https://")):
-                track_url = track_id
+            # Determine the URL (and cache key) to pass to yt-dlp.
+            if track_ref.startswith(("http://", "https://")):
+                track_url = track_ref
                 yt_id = None
+                # Derive the stable SoundCloud cache key so a track fetched via
+                # a set shares its cache entry with the same track requested as
+                # a standalone URL. None falls back to yt-dlp's numeric id.
+                parsed_track = parse_soundcloud_url(track_url)
+                cache_id = parsed_track.video_id if parsed_track else None
             else:
-                track_url = f"https://www.youtube.com/watch?v={track_id}"
-                yt_id = track_id
+                track_url = f"https://www.youtube.com/watch?v={track_ref}"
+                yt_id = track_ref
+                cache_id = None
 
             try:
                 result = await self._download_one(
                     url=track_url,
                     yt_id=yt_id,
-                    cache_id=None,
+                    cache_id=cache_id,
                     noplaylist=True,
                     progress_callback=progress_callback,
                     loop=loop,
                 )
             except FileTooLargeError as exc:
-                logger.warning("Skipping playlist track %s: %s", track_id, exc)
+                logger.warning("Skipping playlist track %s: %s", track_ref, exc)
                 continue
             except DownloadError:
-                logger.warning("Skipping failed playlist track %s", track_id)
+                logger.warning("Skipping failed playlist track %s", track_ref)
                 continue
 
             results.append(result)
@@ -652,6 +684,10 @@ class AudioDownloader:
             ) from exc
 
         if file_size > self._max_file_size_bytes:
+            # Remove the oversized file (and sidecars) now — it will never be
+            # sent, and leaving it risks filling the disk under repeated
+            # requests before the periodic tmp cleanup runs.
+            self._cleanup_partials(ydl_id)
             raise FileTooLargeError(file_size, self._max_file_size_bytes)
 
         # The result's video_id is the cache key: caller override or yt-dlp ID
@@ -682,15 +718,22 @@ class AudioDownloader:
         )
 
     def _find_audio_file(self, ydl_id: str) -> Path:
-        """Locate the downloaded audio file for *ydl_id* in download_dir."""
-        for ext in ("m4a", "webm", "opus", "mp3", "ogg"):
+        """Locate the downloaded audio file for *ydl_id* in download_dir.
+
+        Only files with a known audio extension are accepted — a leftover
+        sidecar (``.jpg`` thumbnail, ``.info.json``, ``.part``) from a partial
+        yt-dlp run must never be mistaken for the audio.
+        """
+        for ext in _PREFERRED_AUDIO_EXTS:
             candidate = self._download_dir / f"{ydl_id}.{ext}"
             if candidate.exists():
                 return candidate
 
-        matches = list(self._download_dir.glob(f"{ydl_id}.*"))
-        if matches:
-            return matches[0]
+        # Fallback: any file whose extension is a recognised audio format,
+        # to tolerate an unexpected container yt-dlp may have produced.
+        for candidate in sorted(self._download_dir.glob(f"{ydl_id}.*")):
+            if candidate.suffix.lower().lstrip(".") in _AUDIO_EXTS:
+                return candidate
 
         raise DownloadError(
             f"Downloaded file not found for id={ydl_id!r} in {self._download_dir}"

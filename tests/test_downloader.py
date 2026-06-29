@@ -19,7 +19,7 @@ from src.downloader.client import (
     FileTooLargeError,
     VideoUnavailableError,
 )
-from src.downloader.url_parser import ParsedURL, URLType
+from src.downloader.url_parser import ParsedURL, Platform, URLType
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -269,6 +269,118 @@ class TestDownloadPlaylistReturnsMultiple:
         assert len(results) == 3
         ids = {r.video_id for r in results}
         assert ids == {"aaaaaaaaaaa", "bbbbbbbbbbb", "ccccccccccc"}
+
+
+class TestDownloadSoundCloudPlaylistUsesTrackUrls:
+    """SoundCloud set tracks download by URL, not a fabricated youtube.com URL."""
+
+    async def test_soundcloud_set_downloads_by_url(self, tmp_path: Path) -> None:
+        sc_flat = {
+            "id": "myset",
+            "_type": "playlist",
+            "entries": [
+                {
+                    "id": "100000001",  # numeric — would match _TRACK_ID_RE
+                    "title": "T1",
+                    "url": "https://soundcloud.com/artist/t1",
+                    "_type": "url",
+                },
+                {
+                    "id": "100000002",
+                    "title": "T2",
+                    "url": "https://soundcloud.com/artist/t2",
+                    "_type": "url",
+                },
+            ],
+        }
+        track_infos = [
+            {"id": "100000001", "title": "T1", "uploader": "artist", "ext": "m4a"},
+            {"id": "100000002", "title": "T2", "uploader": "artist", "ext": "m4a"},
+        ]
+        for ti in track_infos:
+            _create_fake_m4a(tmp_path, ti["id"])
+
+        downloader = AudioDownloader(
+            download_dir=tmp_path, max_file_size_bytes=10 * 1024 * 1024
+        )
+
+        captured_urls: list[str] = []
+        track_iter = iter(track_infos)
+
+        def fake_ydl_cls(opts):
+            if opts.get("extract_flat"):
+                return _make_ydl_mock(sc_flat)
+            m = MagicMock()
+            m.__enter__ = MagicMock(return_value=m)
+            m.__exit__ = MagicMock(return_value=False)
+            info = next(track_iter)
+
+            def extract(url, download):
+                captured_urls.append(url)
+                return info
+
+            m.extract_info.side_effect = extract
+            return m
+
+        parsed = ParsedURL(
+            url_type=URLType.PLAYLIST,
+            video_id=None,
+            playlist_id="artist/sets/myset",
+            canonical_url="https://soundcloud.com/artist/sets/myset",
+            original_url="https://soundcloud.com/artist/sets/myset",
+            platform=Platform.SOUNDCLOUD,
+        )
+
+        with patch("src.downloader.client.yt_dlp.YoutubeDL", side_effect=fake_ydl_cls):
+            results = await downloader.download(parsed, max_tracks=10)
+
+        # Per-track downloads use the SoundCloud URLs, never youtube.com/watch.
+        assert captured_urls == [
+            "https://soundcloud.com/artist/t1",
+            "https://soundcloud.com/artist/t2",
+        ]
+        # Cache keys are the derived sc_ slugs, not the numeric ids.
+        assert all(r.video_id.startswith("sc_") for r in results)
+
+
+class TestOversizedFileCleanedUp:
+    """An oversized rejected download is removed from disk, not left to linger."""
+
+    async def test_oversized_file_deleted(self, tmp_path: Path) -> None:
+        f = _create_fake_m4a(tmp_path, VIDEO_ID, size_bytes=1000)
+        downloader = AudioDownloader(download_dir=tmp_path, max_file_size_bytes=500)
+
+        with (
+            patch(
+                "src.downloader.client.yt_dlp.YoutubeDL",
+                side_effect=lambda opts: _make_ydl_mock(FAKE_SINGLE_INFO),
+            ),
+            pytest.raises(FileTooLargeError),
+        ):
+            await downloader.download(_make_parsed_single())
+
+        assert not f.exists()
+
+
+class TestFindAudioFileIgnoresSidecars:
+    """A leftover sidecar must never be returned as the audio file."""
+
+    async def test_only_thumbnail_sidecar_raises(self, tmp_path: Path) -> None:
+        # yt-dlp "returns" info but only a .jpg thumbnail remains on disk.
+        (tmp_path / f"{VIDEO_ID}.jpg").write_bytes(b"img")
+        (tmp_path / f"{VIDEO_ID}.info.json").write_bytes(b"{}")
+        downloader = AudioDownloader(
+            download_dir=tmp_path, max_file_size_bytes=10 * 1024 * 1024
+        )
+
+        with (
+            patch(
+                "src.downloader.client.yt_dlp.YoutubeDL",
+                side_effect=lambda opts: _make_ydl_mock(FAKE_SINGLE_INFO),
+            ),
+            pytest.raises(DownloadError),
+        ):
+            await downloader.download(_make_parsed_single())
 
 
 # ---------------------------------------------------------------------------

@@ -18,6 +18,7 @@ Security: raw URLs are never passed to a shell.
 
 from __future__ import annotations
 
+import hashlib
 import re
 from dataclasses import dataclass, field
 from enum import Enum, auto
@@ -183,10 +184,14 @@ def _make_sc_video_id(artist: str, track: str) -> str:
     """Derive a stable cache key from SoundCloud artist/track slugs.
 
     Result is always safe for our filesystem cache: [A-Za-z0-9_-], max 64 chars.
+    A short hash of the full slug is appended so two long slugs sharing the same
+    truncated prefix don't collide onto one cache entry (wrong audio served).
     """
     raw = f"sc_{artist}_{track}"
+    digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:10]
     safe = _SAFE_ID_RE.sub("_", raw)
-    return safe[:64]
+    # 53 + "_" + 10 = 64 chars max, within the [A-Za-z0-9_-]{1,64} cache key rule.
+    return f"{safe[:53]}_{digest}"
 
 
 # ---------------------------------------------------------------------------
