@@ -1448,6 +1448,140 @@ class TestInflightDedup:
 
 
 # ===========================================================================
+# Per-download isolation (H2)
+# ===========================================================================
+
+
+def _writing_ydl_cls(info: dict, captured_dirs: list[Path]):
+    """YoutubeDL factory whose extract_info writes the audio into outtmpl's dir.
+
+    Mimics real yt-dlp: the audio lands in the per-download isolation dir
+    derived from ``opts['outtmpl']`` rather than the flat download_dir. Records
+    each download's directory so tests can assert isolation.
+    """
+
+    def factory(opts):
+        out_dir = Path(opts["outtmpl"]).parent
+        captured_dirs.append(out_dir)
+        mock_ydl = _make_ydl_mock(info)
+
+        def extract(url, download=True):  # noqa: FBT002
+            out_dir.mkdir(parents=True, exist_ok=True)
+            (out_dir / f"{info['id']}.m4a").write_bytes(b"x" * 1024)
+            return info
+
+        mock_ydl.extract_info.side_effect = extract
+        return mock_ydl
+
+    return factory
+
+
+class TestDownloadIsolation:
+    """Each download writes into its own ``.dl-<token>`` dir (H2)."""
+
+    async def test_download_writes_to_isolated_dir(self, tmp_path: Path) -> None:
+        """yt-dlp's outtmpl points at a private ``.dl-*`` subdir, not the flat
+        download_dir, and the kept file is moved to the canonical location.
+        """
+        captured_dirs: list[Path] = []
+        downloader = AudioDownloader(download_dir=tmp_path, max_file_size_bytes=10**9)
+
+        with patch(
+            "src.downloader.client.yt_dlp.YoutubeDL",
+            side_effect=_writing_ydl_cls(FAKE_SINGLE_INFO, captured_dirs),
+        ):
+            results = await downloader.download(_make_parsed_single())
+
+        # The download wrote into a per-download isolation dir under tmp_path.
+        assert len(captured_dirs) == 1
+        dl_dir = captured_dirs[0]
+        assert dl_dir.parent == tmp_path
+        assert dl_dir.name.startswith(".dl-")
+        # Final file is at the canonical flat location, isolation dir is gone.
+        assert results[0].file_path == tmp_path / f"{VIDEO_ID}.m4a"
+        assert results[0].file_path.exists()
+        assert not dl_dir.exists()
+
+    async def test_overlapping_same_id_use_separate_dirs(self, tmp_path: Path) -> None:
+        """Two downloads of the SAME id never share an on-disk location.
+
+        This is the core H2 guarantee: a lingering timed-out worker thread for
+        video X writes into its own ``.dl-token1`` dir and can never clobber a
+        fresh request for X which uses ``.dl-token2``.
+        """
+        captured_dirs: list[Path] = []
+        downloader = AudioDownloader(download_dir=tmp_path, max_file_size_bytes=10**9)
+
+        with patch(
+            "src.downloader.client.yt_dlp.YoutubeDL",
+            side_effect=_writing_ydl_cls(FAKE_SINGLE_INFO, captured_dirs),
+        ):
+            r1 = await downloader.download(_make_parsed_single())
+            r2 = await downloader.download(_make_parsed_single())
+
+        assert len(captured_dirs) == 2
+        # Distinct isolation dirs — no collision possible.
+        assert captured_dirs[0] != captured_dirs[1]
+        assert all(d.name.startswith(".dl-") for d in captured_dirs)
+        # Both produce the same canonical result and leave no isolation dirs.
+        assert r1[0].file_path == r2[0].file_path == tmp_path / f"{VIDEO_ID}.m4a"
+        assert not any(p.name.startswith(".dl-") for p in tmp_path.iterdir())
+
+    async def test_isolation_dir_removed_on_error(self, tmp_path: Path) -> None:
+        """A failed download leaves no ``.dl-*`` dir behind."""
+        import yt_dlp
+
+        captured_dirs: list[Path] = []
+        downloader = AudioDownloader(download_dir=tmp_path, max_file_size_bytes=10**9)
+
+        def factory(opts):
+            captured_dirs.append(Path(opts["outtmpl"]).parent)
+            mock_ydl = MagicMock()
+            mock_ydl.__enter__ = MagicMock(return_value=mock_ydl)
+            mock_ydl.__exit__ = MagicMock(return_value=False)
+            mock_ydl.extract_info.side_effect = yt_dlp.utils.DownloadError("boom")
+            return mock_ydl
+
+        with (
+            patch("src.downloader.client.yt_dlp.YoutubeDL", side_effect=factory),
+            pytest.raises(DownloadError),
+        ):
+            await downloader.download(_make_parsed_single())
+
+        assert captured_dirs and not captured_dirs[0].exists()
+        assert not any(p.name.startswith(".dl-") for p in tmp_path.iterdir())
+
+    async def test_oversized_in_isolated_dir_cleaned(self, tmp_path: Path) -> None:
+        """An oversized file written into the isolation dir is fully removed."""
+        captured_dirs: list[Path] = []
+        downloader = AudioDownloader(download_dir=tmp_path, max_file_size_bytes=500)
+
+        def factory(opts):
+            out_dir = Path(opts["outtmpl"]).parent
+            captured_dirs.append(out_dir)
+            mock_ydl = _make_ydl_mock(FAKE_SINGLE_INFO)
+
+            def extract(url, download=True):  # noqa: FBT002
+                out_dir.mkdir(parents=True, exist_ok=True)
+                (out_dir / f"{VIDEO_ID}.m4a").write_bytes(b"x" * 1000)  # > 500
+                return FAKE_SINGLE_INFO
+
+            mock_ydl.extract_info.side_effect = extract
+            return mock_ydl
+
+        with (
+            patch("src.downloader.client.yt_dlp.YoutubeDL", side_effect=factory),
+            pytest.raises(FileTooLargeError),
+        ):
+            await downloader.download(_make_parsed_single())
+
+        # Neither the isolation dir nor a moved canonical file survives.
+        assert not captured_dirs[0].exists()
+        assert not (tmp_path / f"{VIDEO_ID}.m4a").exists()
+        assert not any(p.name.startswith(".dl-") for p in tmp_path.iterdir())
+
+
+# ===========================================================================
 # Playlist sparse / None entries
 # ===========================================================================
 

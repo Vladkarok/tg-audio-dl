@@ -9,6 +9,18 @@ Security notes:
 - Output template uses %(id)s — yt-dlp controls the filename; no user input
   reaches the filesystem path directly.
 - URLs are passed to YoutubeDL() Python API only; never to a shell subprocess.
+
+Download isolation:
+- Each download writes into a private ``.dl-<token>`` subdirectory of
+  download_dir keyed by a per-call uuid. A timed-out yt-dlp worker thread that
+  keeps running (it cannot be cancelled — only its blocking socket call
+  unblocks it, bounded by ``socket_timeout``) can therefore never collide with
+  a fresh request for the same video id, which previously shared the flat
+  ``{id}.{ext}`` path. The kept audio file is moved out to the canonical
+  ``{download_dir}/{id}.{ext}`` location so the cache layer is unchanged, and
+  the per-download dir is removed. Orphaned ``.dl-*`` dirs left behind by a
+  lingering thread are reaped by the periodic stale-tmp job (see
+  :func:`src.cache.disk.cleanup_stale_tmp`).
 """
 
 from __future__ import annotations
@@ -16,7 +28,10 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import os
 import re
+import shutil
+import uuid
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
 from pathlib import Path
@@ -460,11 +475,21 @@ class AudioDownloader:
                    None for SoundCloud where the numeric ID is unknown pre-download.
         cache_id — override for the result's video_id (our cache key).
                    None means use whatever yt-dlp returns as info['id'].
+
+        Writes into a private per-download directory so a lingering timed-out
+        yt-dlp thread can never clobber a concurrent request for the same id.
         """
+        # Isolate this download in its own subdir, keyed by a uuid token, so the
+        # flat ``{id}.{ext}`` output path is never shared with another (possibly
+        # lingering) download of the same video id.
+        dl_dir = self._download_dir / f".dl-{uuid.uuid4().hex}"
+        dl_dir.mkdir(parents=True, exist_ok=True)
+
         ydl_opts = self._build_opts(
             noplaylist=noplaylist,
             progress_callback=progress_callback,
             loop=loop,
+            output_dir=dl_dir,
         )
 
         try:
@@ -473,7 +498,11 @@ class AudioDownloader:
                 timeout=self._download_timeout,
             )
         except TimeoutError as exc:
+            # Remove this download's dir; a lingering worker thread that later
+            # recreates files in its own orphaned copy is reaped by the
+            # periodic stale-tmp job. Flat-path cleanup is defence-in-depth.
             self._cleanup_partials(yt_id)
+            self._cleanup_download_dir(dl_dir)
             raise DownloadError(
                 f"Download timed out after {self._download_timeout}s"
             ) from exc
@@ -481,9 +510,16 @@ class AudioDownloader:
             # Covers VideoUnavailableError too — partials must not linger
             # regardless of how the failure was classified.
             self._cleanup_partials(yt_id)
+            self._cleanup_download_dir(dl_dir)
             raise
 
-        return self._build_result(info, cache_id=cache_id)
+        try:
+            return self._build_result(info, dl_dir, cache_id=cache_id)
+        finally:
+            # The kept audio file has been moved to the canonical location by
+            # _build_result; whatever remains here (sidecars, or an oversized
+            # rejected file) is safe to drop with the per-download dir.
+            self._cleanup_download_dir(dl_dir)
 
     async def _fetch_playlist_metadata(
         self,
@@ -680,10 +716,17 @@ class AudioDownloader:
     # ------------------------------------------------------------------
 
     def _build_result(
-        self, info: dict[str, Any], cache_id: str | None = None
+        self,
+        info: dict[str, Any],
+        dl_dir: Path,
+        cache_id: str | None = None,
     ) -> DownloadResult:
         """Build a DownloadResult from a yt-dlp info_dict.
 
+        dl_dir   — the per-download isolation directory the audio was written
+                   into. The kept file is moved out to the canonical
+                   ``{download_dir}/{id}.{ext}`` path so the cache layer and the
+                   handler see the same flat location as before.
         cache_id — if provided, used as result.video_id (our cache key).
                    The yt-dlp info['id'] is still used to locate the file on disk.
         """
@@ -692,8 +735,11 @@ class AudioDownloader:
         if not _TRACK_ID_RE.fullmatch(ydl_id):
             raise DownloadError(f"yt-dlp returned unexpected video id: {ydl_id!r}")
 
-        # File on disk always uses yt-dlp's own ID
-        file_path = self._find_audio_file(ydl_id)
+        # File on disk always uses yt-dlp's own ID. Look inside the per-download
+        # dir first, then fall back to the flat download_dir (the canonical
+        # location used by tests and tolerant of any prior in-place write).
+        located = self._find_audio_file(ydl_id, dl_dir, self._download_dir)
+        file_path = self._move_to_canonical(located)
         try:
             file_size = file_path.stat().st_size
         except FileNotFoundError as exc:
@@ -704,7 +750,8 @@ class AudioDownloader:
         if file_size > self._max_file_size_bytes:
             # Remove the oversized file (and sidecars) now — it will never be
             # sent, and leaving it risks filling the disk under repeated
-            # requests before the periodic tmp cleanup runs.
+            # requests before the periodic tmp cleanup runs. The per-download
+            # dir is dropped separately by the caller's finally block.
             self._cleanup_partials(ydl_id)
             raise FileTooLargeError(file_size, self._max_file_size_bytes)
 
@@ -735,27 +782,45 @@ class AudioDownloader:
             chapters=chapters,
         )
 
-    def _find_audio_file(self, ydl_id: str) -> Path:
-        """Locate the downloaded audio file for *ydl_id* in download_dir.
+    def _find_audio_file(self, ydl_id: str, *search_dirs: Path) -> Path:
+        """Locate the downloaded audio file for *ydl_id* in *search_dirs*.
 
-        Only files with a known audio extension are accepted — a leftover
-        sidecar (``.jpg`` thumbnail, ``.info.json``, ``.part``) from a partial
-        yt-dlp run must never be mistaken for the audio.
+        Directories are searched in order; within each, preferred extensions are
+        tried by exact name first, then a glob fallback accepts any remaining
+        file that is not a known sidecar (``.jpg`` thumbnail, ``.info.json``,
+        ``.part``) — these must never be mistaken for the audio.
         """
-        for ext in _PREFERRED_AUDIO_EXTS:
-            candidate = self._download_dir / f"{ydl_id}.{ext}"
-            if candidate.exists():
-                return candidate
+        for directory in search_dirs:
+            for ext in _PREFERRED_AUDIO_EXTS:
+                candidate = directory / f"{ydl_id}.{ext}"
+                if candidate.exists():
+                    return candidate
 
-        # Fallback: any remaining file that is not a known sidecar, to tolerate
-        # an unexpected audio container yt-dlp may have produced.
-        for candidate in sorted(self._download_dir.glob(f"{ydl_id}.*")):
-            if candidate.suffix.lower().lstrip(".") not in _SIDECAR_EXTS:
-                return candidate
+            # Fallback: any remaining file that is not a known sidecar, to
+            # tolerate an unexpected audio container yt-dlp may have produced.
+            for candidate in sorted(directory.glob(f"{ydl_id}.*")):
+                if candidate.suffix.lower().lstrip(".") not in _SIDECAR_EXTS:
+                    return candidate
 
+        searched = ", ".join(str(d) for d in search_dirs)
         raise DownloadError(
-            f"Downloaded file not found for id={ydl_id!r} in {self._download_dir}"
+            f"Downloaded file not found for id={ydl_id!r} in {searched}"
         )
+
+    def _move_to_canonical(self, located: Path) -> Path:
+        """Move *located* out of its per-download dir to the flat download_dir.
+
+        Returns the canonical ``{download_dir}/{name}`` path. If *located* is
+        already at the canonical location (e.g. a legacy in-place write or a
+        test fixture), it is returned unchanged.
+        """
+        canonical = self._download_dir / located.name
+        if located == canonical:
+            return canonical
+        # dl_dir is a subdirectory of download_dir, so this is a same-filesystem
+        # rename — atomic and cheap.
+        os.replace(located, canonical)
+        return canonical
 
     # ------------------------------------------------------------------
     # yt-dlp options builder
@@ -767,10 +832,12 @@ class AudioDownloader:
         progress_callback: ProgressCallback | None,
         loop: asyncio.AbstractEventLoop,
         playlistend: int | None = None,
+        output_dir: Path | None = None,
     ) -> dict[str, Any]:
+        out_dir = output_dir if output_dir is not None else self._download_dir
         opts: dict[str, Any] = {
             "format": "bestaudio[ext=m4a]/bestaudio",
-            "outtmpl": str(self._download_dir / "%(id)s.%(ext)s"),
+            "outtmpl": str(out_dir / "%(id)s.%(ext)s"),
             "writethumbnail": True,
             "embedchapters": True,
             "postprocessors": [
@@ -852,9 +919,14 @@ class AudioDownloader:
         return msg
 
     def _cleanup_partials(self, yt_id: str | None) -> None:
-        """Remove any partial files for *yt_id* from download_dir."""
+        """Remove any partial files for *yt_id* from the flat download_dir."""
         if not yt_id:
             return
         for path in self._download_dir.glob(f"{yt_id}.*"):
             with contextlib.suppress(OSError):
                 path.unlink(missing_ok=True)
+
+    @staticmethod
+    def _cleanup_download_dir(dl_dir: Path) -> None:
+        """Remove a per-download isolation dir and anything left inside it."""
+        shutil.rmtree(dl_dir, ignore_errors=True)

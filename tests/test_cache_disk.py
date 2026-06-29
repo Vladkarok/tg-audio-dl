@@ -511,6 +511,32 @@ class TestCleanupStaleTmp:
         count = await cleanup_stale_tmp(Path("/nonexistent/dir"), max_age_seconds=3600)
         assert count == 0
 
+    async def test_removes_stale_download_dirs(self, tmp_path: Path) -> None:
+        """Orphaned per-download ``.dl-*`` dirs are reaped by age (H2)."""
+        import os
+        import time
+
+        from src.cache.disk import cleanup_stale_tmp
+
+        # An orphaned isolation dir from a lingering yt-dlp thread, plus the
+        # partial file it left inside it.
+        old_dir = tmp_path / ".dl-deadbeef"
+        old_dir.mkdir()
+        (old_dir / "dQw4w9WgXcQ.m4a.part").write_bytes(b"partial")
+        old_time = time.time() - 7200
+        os.utime(old_dir, (old_time, old_time))
+
+        # A fresh isolation dir (download still in flight) must be kept.
+        fresh_dir = tmp_path / ".dl-cafebabe"
+        fresh_dir.mkdir()
+        (fresh_dir / "abc.m4a").write_bytes(b"x")
+
+        count = await cleanup_stale_tmp(tmp_path, max_age_seconds=3600)
+
+        assert count == 1
+        assert not old_dir.exists()
+        assert fresh_dir.exists()
+
 
 class TestPutRemovesStaleExtension:
     """put() should remove old variant when extension changes."""

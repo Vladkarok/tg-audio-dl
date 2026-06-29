@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import time
 from pathlib import Path
 
@@ -251,22 +252,32 @@ class DiskCache(CacheBackend):
 
 
 async def cleanup_stale_tmp(tmp_dir: Path, max_age_seconds: float) -> int:
-    """Delete files in *tmp_dir* older than *max_age_seconds*. Returns count."""
+    """Delete entries in *tmp_dir* older than *max_age_seconds*. Returns count.
+
+    Removes both stale files and stale subdirectories. The latter reaps
+    orphaned per-download ``.dl-*`` dirs (see
+    :class:`src.downloader.client.AudioDownloader`) left behind when a timed-out
+    yt-dlp worker thread keeps writing after its coroutine was abandoned — an
+    actively-written dir keeps a fresh mtime and is only removed once the thread
+    stops touching it.
+    """
     if not tmp_dir.exists():
         return 0
     now = time.time()
     deleted = 0
     for entry in tmp_dir.iterdir():
-        if not entry.is_file():
-            continue
         try:
             mtime = entry.stat().st_mtime
-            if now - mtime > max_age_seconds:
+            if now - mtime <= max_age_seconds:
+                continue
+            if entry.is_dir():
+                shutil.rmtree(entry, ignore_errors=True)
+            else:
                 entry.unlink()
-                deleted += 1
-                logger.debug("cleanup_stale_tmp: removed %s", entry.name)
+            deleted += 1
+            logger.debug("cleanup_stale_tmp: removed %s", entry.name)
         except FileNotFoundError:
             pass
     if deleted:
-        logger.info("cleanup_stale_tmp: removed %d stale file(s)", deleted)
+        logger.info("cleanup_stale_tmp: removed %d stale entr(ies)", deleted)
     return deleted
