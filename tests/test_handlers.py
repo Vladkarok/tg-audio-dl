@@ -1143,6 +1143,50 @@ class TestHandleRedownload:
 
         downloader.download.assert_called_once()
 
+    async def test_redownload_concurrent_with_same_id_no_deadlock(self, tmp_path):
+        """A normal request + /redownload for one id share the per-media lock
+        (evict now runs inside it) and must not deadlock; evict runs once."""
+        cached = tmp_path / "dQw4w9WgXcQ.m4a"
+        cached.write_bytes(b"audio")
+
+        stored = {"dQw4w9WgXcQ"}
+        cache = MagicMock()
+        cache.exists = AsyncMock(side_effect=lambda vid: vid in stored)
+        cache.get = AsyncMock(return_value=cached)
+        cache.get_file_id = AsyncMock(return_value=None)
+        cache.store_file_id = AsyncMock()
+        cache.get_chapters = AsyncMock(return_value=None)
+        cache.store_chapters = AsyncMock()
+        cache.put = AsyncMock(return_value=cached)
+
+        async def evict(vid):
+            stored.discard(vid)
+
+        cache.evict = AsyncMock(side_effect=evict)
+
+        downloader = MagicMock()
+        downloader.download = AsyncMock(return_value=[make_download_result()])
+
+        context = make_context(cache=cache, downloader=downloader)
+        context.bot.send_audio = AsyncMock(
+            return_value=MagicMock(message_id=1, audio=MagicMock(file_id="fid"))
+        )
+
+        with (
+            patch("asyncio.sleep", new_callable=AsyncMock),
+            patch("pathlib.Path.open", mock_open(read_data=b"x")),
+            patch("src.bot.handlers._extract_thumbnail", return_value=None),
+        ):
+            await asyncio.gather(
+                handle_url(make_update(), context),
+                handle_redownload(
+                    make_update(text="/redownload https://youtu.be/dQw4w9WgXcQ"),
+                    context,
+                ),
+            )
+
+        cache.evict.assert_awaited_once()
+
 
 # ---------------------------------------------------------------------------
 # /refresh command — metadata-only refresh

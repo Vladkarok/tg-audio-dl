@@ -118,6 +118,20 @@ async def _media_download_lock(video_id: str) -> AsyncIterator[None]:
                 _media_download_locks[video_id] = (existing_lock, count - 1)
 
 
+async def _evict_for_redownload(cache: CacheBackend, video_id: str) -> None:
+    """Evict cached audio + file_id + chapters sidecar before a /redownload.
+
+    Non-fatal: a failing evict still lets the fresh download overwrite the audio,
+    at the cost of possibly-stale sidecars — we don't block on a flaky S3.
+    """
+    try:
+        await cache.evict(video_id)
+    except Exception:
+        logger.warning(
+            "Failed to evict cache for %s before redownload", video_id, exc_info=True
+        )
+
+
 _WELCOME_TEXT = (
     "👋 Welcome! Send me a YouTube video or playlist URL and I will download "
     "the audio and send it back to you as an audio file."
@@ -312,22 +326,6 @@ async def handle_redownload(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
     cache: CacheBackend = context.bot_data["cache"]
 
-    # Evict cached audio + file_id + chapters sidecar before redownloading so
-    # the fresh download lands on a clean slate. Skipped for playlists (they
-    # have no top-level cache key; per-track caches are replaced on re-put).
-    if parsed_url.video_id:
-        try:
-            await cache.evict(parsed_url.video_id)
-        except Exception:
-            # Non-fatal: a failing evict still lets the download overwrite the
-            # audio, at the cost of possibly-stale sidecars. The user's intent
-            # (fresh audio) is preserved; we don't want to block on a flaky S3.
-            logger.warning(
-                "Failed to evict cache for %s before redownload",
-                parsed_url.video_id,
-                exc_info=True,
-            )
-
     progress = ProgressManager(
         context.bot,
         chat_id=update.message.chat_id,
@@ -335,8 +333,23 @@ async def handle_redownload(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     )
     await progress.create()
 
+    video_id = parsed_url.video_id
     try:
-        await _process_url(update, context, progress, parsed_url, force_redownload=True)
+        if video_id:
+            # Evict + redownload under the per-media lock so the eviction is
+            # serialized against any in-flight same-id request — otherwise it
+            # could delete a cached file mid-upload for a concurrent resend.
+            # Call _process_url_locked directly (we already hold the lock).
+            async with _media_download_lock(video_id):
+                await _evict_for_redownload(cache, video_id)
+                await _process_url_locked(
+                    update, context, progress, parsed_url, force_redownload=True
+                )
+        else:
+            # Playlists have no top-level cache key — nothing to evict, no dedup.
+            await _process_url_locked(
+                update, context, progress, parsed_url, force_redownload=True
+            )
     except Exception:
         logger.exception("Unexpected error in handle_redownload for user %d", user_id)
         with contextlib.suppress(Exception):
@@ -804,6 +817,12 @@ async def _process_url(
     requests for the same uncached URL don't both download it — the second waits
     and then hits the cache the first populated. Playlists have no single cache
     key and are not deduplicated.
+
+    The lock intentionally spans the entire cache-check → download → upload
+    sequence, not just the download: same-id requests are rare, and holding it
+    through the upload keeps the dedup logic simple and guarantees the second
+    request sees a fully durable cache entry (audio + file_id + chapters) rather
+    than racing a half-written one.
     """
     video_id = parsed_url.video_id
     if video_id is None:
