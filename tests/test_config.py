@@ -284,6 +284,28 @@ def test_local_server_url_must_have_scheme(monkeypatch):
         Settings()
 
 
+def test_max_file_size_must_be_positive(monkeypatch):
+    """MAX_FILE_SIZE_MB=0 would reject every download → must raise."""
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123:ABC")
+    monkeypatch.setenv("MAX_FILE_SIZE_MB", "0")
+
+    from src.config import Settings
+
+    with pytest.raises((ValidationError, ValueError)):
+        Settings()
+
+
+def test_playlist_max_tracks_must_be_positive(monkeypatch):
+    """PLAYLIST_MAX_TRACKS=0 would make every playlist look empty → must raise."""
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123:ABC")
+    monkeypatch.setenv("PLAYLIST_MAX_TRACKS", "0")
+
+    from src.config import Settings
+
+    with pytest.raises((ValidationError, ValueError)):
+        Settings()
+
+
 def test_local_server_url_valid_http(monkeypatch):
     """TELEGRAM_LOCAL_SERVER_URL with http:// scheme must be accepted."""
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123:ABC")

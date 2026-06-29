@@ -139,6 +139,18 @@ class TestStartHandler:
         await handle_help(update, context)
         update.message.reply_text.assert_called_once()
 
+    async def test_handle_start_rejects_disallowed_user(self):
+        update = make_update(text="/start", user_id=999)
+        context = make_context(allowed_users=[12345])  # 999 not allowed
+        await handle_start(update, context)
+        update.message.reply_text.assert_not_called()
+
+    async def test_handle_help_rejects_disallowed_user(self):
+        update = make_update(text="/help", user_id=999)
+        context = make_context(allowed_users=[12345])
+        await handle_help(update, context)
+        update.message.reply_text.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # URL handler — happy paths

@@ -33,7 +33,9 @@ CACHE_DIR=./cache
 CACHE_MAX_SIZE_GB=5.0
 S3_ENABLED=false
 MAX_FILE_SIZE_MB=2000
-ALLOWED_USER_IDS=[]
+# Restrict access to your own Telegram user ID(s). Leaving this empty makes the
+# bot PUBLIC — anyone can use your server's bandwidth/proxy. Only do that on purpose.
+ALLOWED_USER_IDS=123456789
 LOG_LEVEL=INFO
 PLAYLIST_MAX_TRACKS=50
 RATE_LIMIT_PER_MINUTE=5

@@ -68,11 +68,14 @@ _YOUTUBE_HOSTS: frozenset[str] = frozenset(
     }
 )
 
-# Regex to find candidate YouTube URLs inside free-form text
+# Regex to find candidate YouTube URLs inside free-form text. Case-insensitive
+# so URLs with an uppercased scheme/host are still extracted (the video id is
+# extracted case-sensitively later by parse_youtube_url).
 _YT_URL_RE = re.compile(
     r"https?://(?:www\.|m\.|music\.)?(?:youtube(?:-nocookie)?\.com|youtu\.be)(?::\d+)?"
     r"(?:/[^\s\"'<>]*)?"
-    r"(?:\?[^\s\"'<>]*)?"
+    r"(?:\?[^\s\"'<>]*)?",
+    re.IGNORECASE,
 )
 
 # ---------------------------------------------------------------------------
@@ -101,10 +104,11 @@ _SC_RESERVED_PATHS: frozenset[str] = frozenset(
     }
 )
 
-# Regex to find candidate SoundCloud URLs inside free-form text
+# Regex to find candidate SoundCloud URLs inside free-form text (case-insensitive).
 _SC_URL_RE = re.compile(
     r"https?://(?:www\.)?soundcloud\.com(?::\d+)?(?:/[^\s\"'<>]*)?"
-    r"|https?://on\.soundcloud\.com(?::\d+)?(?:/[^\s\"'<>]*)?"
+    r"|https?://on\.soundcloud\.com(?::\d+)?(?:/[^\s\"'<>]*)?",
+    re.IGNORECASE,
 )
 
 # Regex for safe cache key characters
@@ -122,9 +126,10 @@ def _is_youtube_host(host: str) -> bool:
     Strips an explicit port (e.g. ``youtube.com:443``) before comparing so
     that URLs copied from browser dev-tools or proxies are still recognised.
     """
-    # urlparse puts host:port in netloc — strip port if present
+    # urlparse puts host:port in netloc — strip port if present. Hostnames are
+    # case-insensitive, so normalise before matching the (lowercase) allowlist.
     bare_host = host.rsplit(":", 1)[0] if ":" in host else host
-    return bare_host in _YOUTUBE_HOSTS
+    return bare_host.lower() in _YOUTUBE_HOSTS
 
 
 def _first_param(params: dict[str, list[str]], key: str) -> str | None:
@@ -294,9 +299,10 @@ def parse_soundcloud_url(raw_url: str) -> ParsedURL | None:
     except Exception:  # noqa: BLE001
         return None
 
-    # Strip explicit port (e.g. soundcloud.com:443) from netloc
+    # Strip explicit port (e.g. soundcloud.com:443) from netloc and lowercase —
+    # hostnames are case-insensitive.
     raw_host = parsed.netloc
-    host = raw_host.rsplit(":", 1)[0] if ":" in raw_host else raw_host
+    host = (raw_host.rsplit(":", 1)[0] if ":" in raw_host else raw_host).lower()
 
     # on.soundcloud.com short URLs — can't derive slug, no video_id
     if host == "on.soundcloud.com":

@@ -273,6 +273,32 @@ class TestNoCookieHost:
         assert result.video_id == VIDEO_ID
 
 
+class TestCaseInsensitiveHost:
+    """Hostnames are case-insensitive (DNS), so uppercased hosts must work."""
+
+    def test_uppercase_youtube_host_accepted(self):
+        result = parse_youtube_url(f"https://WWW.YOUTUBE.COM/watch?v={VIDEO_ID}")
+        assert result is not None
+        assert result.video_id == VIDEO_ID
+
+    def test_mixed_case_youtu_be_accepted(self):
+        result = parse_youtube_url(f"https://YouTu.be/{VIDEO_ID}")
+        assert result is not None
+        assert result.video_id == VIDEO_ID
+
+    def test_uppercase_host_extracted_from_text(self):
+        results = extract_media_urls(
+            f"watch HTTPS://WWW.YOUTUBE.COM/watch?v={VIDEO_ID} now"
+        )
+        assert len(results) == 1
+        assert results[0].video_id == VIDEO_ID
+
+    def test_uppercase_soundcloud_host_accepted(self):
+        result = parse_soundcloud_url("https://SoundCloud.com/artist/track")
+        assert result is not None
+        assert result.platform == Platform.SOUNDCLOUD
+
+
 class TestEmbedPlaylistSentinel:
     """/embed/videoseries?list=... is a playlist, not a video."""
 

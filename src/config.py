@@ -136,6 +136,20 @@ class Settings(BaseSettings):
             raise ValueError("RATE_LIMIT_PER_MINUTE must be at least 1")
         return v
 
+    @field_validator("MAX_FILE_SIZE_MB")
+    @classmethod
+    def validate_max_file_size(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError("MAX_FILE_SIZE_MB must be at least 1")
+        return v
+
+    @field_validator("PLAYLIST_MAX_TRACKS")
+    @classmethod
+    def validate_playlist_max_tracks(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError("PLAYLIST_MAX_TRACKS must be at least 1")
+        return v
+
     @field_validator("DOWNLOAD_TIMEOUT_SECONDS")
     @classmethod
     def validate_download_timeout(cls, v: int) -> int:

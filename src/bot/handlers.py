@@ -164,14 +164,22 @@ async def _consume_rate_limit(user_id: int, settings: Settings) -> bool:
 
 async def handle_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Reply with welcome message explaining bot usage."""
-    if update.message is None:
+    if update.message is None or update.effective_user is None:
+        return
+    settings: Settings = context.bot_data["settings"]
+    if not _is_user_allowed(update.effective_user.id, settings):
+        logger.warning("Rejected /start from user %d", update.effective_user.id)
         return
     await update.message.reply_text(_WELCOME_TEXT)
 
 
 async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Reply with help text."""
-    if update.message is None:
+    if update.message is None or update.effective_user is None:
+        return
+    settings: Settings = context.bot_data["settings"]
+    if not _is_user_allowed(update.effective_user.id, settings):
+        logger.warning("Rejected /help from user %d", update.effective_user.id)
         return
     await update.message.reply_text(_HELP_TEXT)
 
