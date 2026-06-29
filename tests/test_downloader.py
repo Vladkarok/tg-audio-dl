@@ -1502,13 +1502,78 @@ class TestDownloadIsolation:
         assert results[0].file_path.exists()
         assert not dl_dir.exists()
 
-    async def test_overlapping_same_id_use_separate_dirs(self, tmp_path: Path) -> None:
-        """Two downloads of the SAME id never share an on-disk location.
+    async def test_concurrent_same_id_write_to_separate_dirs(
+        self, tmp_path: Path
+    ) -> None:
+        """Truly overlapping downloads of the SAME id never share a write path.
 
         This is the core H2 guarantee: a lingering timed-out worker thread for
         video X writes into its own ``.dl-token1`` dir and can never clobber a
-        fresh request for X which uses ``.dl-token2``.
+        fresh request for X which uses ``.dl-token2``. We call ``_download_one``
+        directly (bypassing the per-media serialisation lock) and interleave the
+        two calls so both isolation dirs provably coexist while each writes its
+        own distinct bytes.
         """
+        downloader = AudioDownloader(download_dir=tmp_path, max_file_size_bytes=10**9)
+        loop = asyncio.get_running_loop()
+        # marker -> the dir that download wrote into, and the bytes read back
+        observations: list[tuple[bytes, Path, bytes]] = []
+        markers = iter([b"AAAA", b"BBBB"])
+
+        def factory(opts):
+            out_dir = Path(opts["outtmpl"]).parent
+            marker = next(markers)
+            mock_ydl = _make_ydl_mock(FAKE_SINGLE_INFO)
+
+            def extract(url, download=True):  # noqa: FBT002
+                out_dir.mkdir(parents=True, exist_ok=True)
+                target = out_dir / f"{VIDEO_ID}.m4a"
+                target.write_bytes(marker)
+                # Read back from this download's OWN dir — must still be its
+                # own bytes, proving the sibling concurrent write went elsewhere.
+                observations.append((marker, out_dir, target.read_bytes()))
+                return FAKE_SINGLE_INFO
+
+            mock_ydl.extract_info.side_effect = extract
+            return mock_ydl
+
+        async def fake_run_blocking(func, /, *args, **kwargs):
+            # Yield so the sibling task creates its own dl_dir before either
+            # writes — guarantees the two isolation dirs coexist concurrently.
+            await asyncio.sleep(0)
+            return func(*args, **kwargs)
+
+        with (
+            patch("src.downloader.client.yt_dlp.YoutubeDL", side_effect=factory),
+            patch("src.downloader.client._run_blocking", new=fake_run_blocking),
+        ):
+            tasks = [
+                asyncio.create_task(
+                    downloader._download_one(
+                        url=_make_parsed_single().canonical_url,
+                        yt_id=VIDEO_ID,
+                        cache_id=None,
+                        noplaylist=True,
+                        progress_callback=None,
+                        loop=loop,
+                    )
+                )
+                for _ in range(2)
+            ]
+            await asyncio.gather(*tasks)
+
+        # Each download saw only its own bytes in its own dir.
+        assert {m for m, _, _ in observations} == {b"AAAA", b"BBBB"}
+        assert all(marker == read_back for marker, _, read_back in observations)
+        # The two isolation dirs were distinct and both `.dl-*`.
+        dirs = {d for _, d, _ in observations}
+        assert len(dirs) == 2
+        assert all(d.name.startswith(".dl-") for d in dirs)
+        # No isolation dirs survive after both complete.
+        assert not any(p.name.startswith(".dl-") for p in tmp_path.iterdir())
+
+    async def test_sequential_same_id_use_distinct_dirs(self, tmp_path: Path) -> None:
+        """Back-to-back downloads of the same id each get a fresh isolation dir."""
         captured_dirs: list[Path] = []
         downloader = AudioDownloader(download_dir=tmp_path, max_file_size_bytes=10**9)
 
@@ -1520,10 +1585,8 @@ class TestDownloadIsolation:
             r2 = await downloader.download(_make_parsed_single())
 
         assert len(captured_dirs) == 2
-        # Distinct isolation dirs — no collision possible.
         assert captured_dirs[0] != captured_dirs[1]
         assert all(d.name.startswith(".dl-") for d in captured_dirs)
-        # Both produce the same canonical result and leave no isolation dirs.
         assert r1[0].file_path == r2[0].file_path == tmp_path / f"{VIDEO_ID}.m4a"
         assert not any(p.name.startswith(".dl-") for p in tmp_path.iterdir())
 

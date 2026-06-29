@@ -813,6 +813,14 @@ class AudioDownloader:
         Returns the canonical ``{download_dir}/{name}`` path. If *located* is
         already at the canonical location (e.g. a legacy in-place write or a
         test fixture), it is returned unchanged.
+
+        The canonical path is shared by id, so two concurrent downloads of the
+        same id (only possible via two overlapping playlists — single requests
+        are serialised by the per-media lock) both target it. That is benign:
+        the move is an atomic ``os.replace`` of a *complete* file, so a partial
+        or corrupt file never lands here (the H2 bug), and same-id means the two
+        files are byte-identical anyway. The per-download *write* isolation that
+        H2 fixes happens earlier, in the dl_dir.
         """
         canonical = self._download_dir / located.name
         if located == canonical:

@@ -518,12 +518,15 @@ class TestCleanupStaleTmp:
 
         from src.cache.disk import cleanup_stale_tmp
 
-        # An orphaned isolation dir from a lingering yt-dlp thread, plus the
-        # partial file it left inside it.
+        old_time = time.time() - 7200
+
+        # A truly orphaned isolation dir: both the dir and the partial file the
+        # dead worker left behind are old.
         old_dir = tmp_path / ".dl-deadbeef"
         old_dir.mkdir()
-        (old_dir / "dQw4w9WgXcQ.m4a.part").write_bytes(b"partial")
-        old_time = time.time() - 7200
+        part = old_dir / "dQw4w9WgXcQ.m4a.part"
+        part.write_bytes(b"partial")
+        os.utime(part, (old_time, old_time))
         os.utime(old_dir, (old_time, old_time))
 
         # A fresh isolation dir (download still in flight) must be kept.
@@ -536,6 +539,30 @@ class TestCleanupStaleTmp:
         assert count == 1
         assert not old_dir.exists()
         assert fresh_dir.exists()
+
+    async def test_keeps_dir_with_recently_written_child(self, tmp_path: Path) -> None:
+        """A dir whose own mtime is old but with a freshly-written child is kept.
+
+        Appending to a long-lived ``.part`` doesn't bump the parent dir's mtime,
+        so reaping must consider the newest descendant — otherwise an in-flight
+        download could be deleted mid-write.
+        """
+        import os
+        import time
+
+        from src.cache.disk import cleanup_stale_tmp
+
+        old_time = time.time() - 7200
+        active_dir = tmp_path / ".dl-stillwriting"
+        active_dir.mkdir()
+        # Child written just now; only the directory's own mtime is stale.
+        (active_dir / "vid.m4a.part").write_bytes(b"streaming")
+        os.utime(active_dir, (old_time, old_time))
+
+        count = await cleanup_stale_tmp(tmp_path, max_age_seconds=3600)
+
+        assert count == 0
+        assert active_dir.exists()
 
 
 class TestPutRemovesStaleExtension:

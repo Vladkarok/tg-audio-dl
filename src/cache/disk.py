@@ -251,15 +251,32 @@ class DiskCache(CacheBackend):
 # ---------------------------------------------------------------------------
 
 
+def _newest_mtime(path: Path) -> float:
+    """Return the most recent mtime of *path* and, for a dir, its descendants.
+
+    A directory's own mtime only changes when entries are added/removed/renamed,
+    not when an existing file inside it is appended to. A lingering yt-dlp worker
+    streaming into a long-lived ``.part`` could therefore look stale by the dir's
+    mtime alone. Walking the tree and taking the newest child mtime ensures an
+    actively-written dir is never reaped mid-download.
+    """
+    newest = path.stat().st_mtime
+    if path.is_dir():
+        for child in path.rglob("*"):
+            with contextlib.suppress(OSError):
+                newest = max(newest, child.stat().st_mtime)
+    return newest
+
+
 async def cleanup_stale_tmp(tmp_dir: Path, max_age_seconds: float) -> int:
     """Delete entries in *tmp_dir* older than *max_age_seconds*. Returns count.
 
     Removes both stale files and stale subdirectories. The latter reaps
     orphaned per-download ``.dl-*`` dirs (see
     :class:`src.downloader.client.AudioDownloader`) left behind when a timed-out
-    yt-dlp worker thread keeps writing after its coroutine was abandoned — an
-    actively-written dir keeps a fresh mtime and is only removed once the thread
-    stops touching it.
+    yt-dlp worker thread keeps writing after its coroutine was abandoned. A dir
+    is only removed once *nothing inside it* has been touched within the age
+    window (see :func:`_newest_mtime`), so an in-flight download is never reaped.
     """
     if not tmp_dir.exists():
         return 0
@@ -267,10 +284,11 @@ async def cleanup_stale_tmp(tmp_dir: Path, max_age_seconds: float) -> int:
     deleted = 0
     for entry in tmp_dir.iterdir():
         try:
-            mtime = entry.stat().st_mtime
-            if now - mtime <= max_age_seconds:
+            is_dir = entry.is_dir()
+            age_ref = _newest_mtime(entry) if is_dir else entry.stat().st_mtime
+            if now - age_ref <= max_age_seconds:
                 continue
-            if entry.is_dir():
+            if is_dir:
                 shutil.rmtree(entry, ignore_errors=True)
             else:
                 entry.unlink()
