@@ -23,12 +23,15 @@ from src.bot.captions import (
     _CAPTION_MAX as _CAPTION_MAX,  # re-exported for tests
 )
 from src.bot.captions import (
-    _build_caption_result,
+    _build_audio_message,
     _build_chapter_pages,
     _build_chapter_pages_markup,
     _extract_chapter_page_title,
     _normalize_chapters,
     _parse_chapter_page_callback_data,
+)
+from src.bot.captions import (
+    _build_caption_result as _build_caption_result,  # re-exported for tests
 )
 from src.bot.captions import (
     _format_timestamp as _format_timestamp,  # re-exported for tests
@@ -103,8 +106,8 @@ _HELP_TEXT = (
     "(useful when the author added timestamps after upload).\n"
     "• /redownload <URL> — evict the cached copy and download again "
     "from scratch.\n"
-    "• /chapters <URL> — experimental paginated chapter captions "
-    "(when enabled).\n"
+    "• /chapters <URL> — browse a cached track's chapters as paginated "
+    "captions with navigation buttons.\n"
 )
 
 
@@ -417,7 +420,10 @@ async def handle_refresh(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await progress.set_step(Step.PROCESSING, StepStatus.DONE)
 
         display_title = clean_title(metadata.title) or video_id
-        caption_result = _build_caption_result(display_title, final_chapters)
+        paginate = settings.CHAPTER_PAGES_ENABLED
+        audio_message = _build_audio_message(
+            display_title, final_chapters, video_id, paginate=paginate
+        )
 
         # --- Fast path: resend via Telegram file_id -----------------------
         file_id = await cache.get_file_id(video_id)
@@ -429,7 +435,8 @@ async def handle_refresh(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 sent_msg = await context.bot.send_audio(
                     chat_id=update.message.chat_id,
                     audio=file_id,
-                    caption=caption_result.caption,
+                    caption=audio_message.caption,
+                    reply_markup=audio_message.reply_markup,
                     read_timeout=300,
                     write_timeout=300,
                 )
@@ -475,7 +482,7 @@ async def handle_refresh(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 chapters=final_chapters,
             )
             sent_msg = await _send_audio(
-                context.bot, update.message.chat_id, result, progress
+                context.bot, update.message.chat_id, result, progress, paginate=paginate
             )
             if sent_msg.audio:
                 try:
@@ -488,12 +495,12 @@ async def handle_refresh(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                     )
         else:
             # file_id path succeeded — chapter index reply still needed if overflow
-            if caption_result.index_messages:
+            if audio_message.index_messages:
                 await _send_chapter_index(
                     context.bot,
                     update.message.chat_id,
                     sent_msg.message_id,
-                    caption_result.index_messages,
+                    audio_message.index_messages,
                 )
 
         await progress.set_step(Step.UPLOADING, StepStatus.DONE)
@@ -509,12 +516,12 @@ async def handle_refresh(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 _CHAPTERS_USAGE = (
     "Usage: /chapters <YouTube or SoundCloud URL>\n"
-    "Experimental paginated chapter captions. Works only for cached single tracks."
+    "Paginated chapter captions. Works only for cached single tracks."
 )
 
 
 async def handle_chapters(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Send cached audio with experimental paginated chapter captions.
+    """Send cached audio with paginated chapter captions.
 
     This is intentionally cache-only: the command may fetch metadata, but it
     never downloads audio from the source. Normal URL handling remains the
@@ -524,8 +531,8 @@ async def handle_chapters(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return
 
     settings: Settings = context.bot_data["settings"]
-    if not settings.EXPERIMENTAL_CHAPTER_PAGES_ENABLED:
-        await update.message.reply_text("Experimental chapter pages are disabled.")
+    if not settings.CHAPTER_PAGES_ENABLED:
+        await update.message.reply_text("Chapter pages are disabled.")
         return
 
     user_id = update.effective_user.id
@@ -673,8 +680,8 @@ async def handle_chapter_page_callback(
         return
 
     settings: Settings = context.bot_data["settings"]
-    if not settings.EXPERIMENTAL_CHAPTER_PAGES_ENABLED:
-        await query.answer("Experimental chapter pages are disabled.", show_alert=True)
+    if not settings.CHAPTER_PAGES_ENABLED:
+        await query.answer("Chapter pages are disabled.", show_alert=True)
         return
 
     if update.effective_user is not None and not _is_user_allowed(
@@ -763,6 +770,7 @@ async def _process_url(
     downloader: AudioDownloader = context.bot_data["downloader"]
     cache: CacheBackend = context.bot_data["cache"]
     video_id = parsed_url.video_id  # None for playlists
+    paginate = settings.CHAPTER_PAGES_ENABLED
 
     # --- Cache check (single videos only) --------------------------------
     if not force_redownload and video_id and await cache.exists(video_id):
@@ -783,20 +791,23 @@ async def _process_url(
                     t, _ = _extract_audio_metadata(fid_path)
                     if t:
                         fid_title = clean_title(t) or video_id
-                fid_caption_result = _build_caption_result(fid_title, fid_chapters)
+                fid_audio_message = _build_audio_message(
+                    fid_title, fid_chapters, video_id, paginate=paginate
+                )
                 fid_msg = await context.bot.send_audio(
                     chat_id=update.message.chat_id,
                     audio=file_id,
-                    caption=fid_caption_result.caption,
+                    caption=fid_audio_message.caption,
+                    reply_markup=fid_audio_message.reply_markup,
                     read_timeout=300,
                     write_timeout=300,
                 )
-                if fid_caption_result.index_messages:
+                if fid_audio_message.index_messages:
                     await _send_chapter_index(
                         context.bot,
                         update.message.chat_id,
                         fid_msg.message_id,
-                        fid_caption_result.index_messages,
+                        fid_audio_message.index_messages,
                     )
                 await progress.set_step(Step.UPLOADING, StepStatus.DONE)
                 await asyncio.sleep(2)
@@ -829,7 +840,7 @@ async def _process_url(
                 chapters=cached_chapters,
             )
             msg = await _send_audio(
-                context.bot, update.message.chat_id, result, progress
+                context.bot, update.message.chat_id, result, progress, paginate=paginate
             )
             if msg.audio:
                 try:
@@ -872,6 +883,7 @@ async def _process_url(
                 result=result,
                 progress=progress,
                 cache=cache,
+                paginate=paginate,
             )
 
         results = await downloader.download(
@@ -914,6 +926,7 @@ async def _process_url(
             result=result,
             progress=progress,
             cache=cache,
+            paginate=paginate,
         )
 
     await progress.set_step(Step.UPLOADING, StepStatus.DONE)
@@ -962,6 +975,8 @@ async def _cache_and_upload_one(
     result: DownloadResult,
     progress: ProgressManager,
     cache: CacheBackend,
+    *,
+    paginate: bool,
 ) -> None:
     """Cache a DownloadResult then upload it to Telegram."""
     stored_path: Path | None = None
@@ -973,7 +988,7 @@ async def _cache_and_upload_one(
     send_result = (
         dataclasses.replace(result, file_path=stored_path) if stored_path else result
     )
-    msg = await _send_audio(bot, chat_id, send_result, progress)
+    msg = await _send_audio(bot, chat_id, send_result, progress, paginate=paginate)
     if msg.audio:
         try:
             await cache.store_file_id(result.video_id, msg.audio.file_id)
@@ -993,7 +1008,12 @@ async def _cache_and_upload_one(
 
 
 async def _send_audio(
-    bot: Bot, chat_id: int, result: DownloadResult, progress: ProgressManager
+    bot: Bot,
+    chat_id: int,
+    result: DownloadResult,
+    progress: ProgressManager,
+    *,
+    paginate: bool,
 ) -> Message:
     """Send a single audio file to the user. Returns the sent Message."""
     await progress.set_step(Step.PROCESSING, StepStatus.ACTIVE)
@@ -1001,7 +1021,9 @@ async def _send_audio(
     display_title = clean_title(result.title) or result.video_id
     safe_filename = sanitize_filename(display_title) or result.video_id
     thumbnail = _extract_thumbnail(result.file_path)
-    caption_result = _build_caption_result(display_title, result.chapters)
+    audio_message = _build_audio_message(
+        display_title, result.chapters, result.video_id, paginate=paginate
+    )
     await progress.set_step(Step.PROCESSING, StepStatus.DONE)
     await progress.start_upload_animation()
     with result.file_path.open("rb") as audio_file:
@@ -1012,14 +1034,15 @@ async def _send_audio(
             title=display_title,
             performer=result.artist,
             duration=result.duration_seconds,
-            caption=caption_result.caption,
+            caption=audio_message.caption,
+            reply_markup=audio_message.reply_markup,
             filename=f"{safe_filename}{result.file_path.suffix}",
             read_timeout=300,
             write_timeout=300,
         )
-    if caption_result.index_messages:
+    if audio_message.index_messages:
         await _send_chapter_index(
-            bot, chat_id, msg.message_id, caption_result.index_messages
+            bot, chat_id, msg.message_id, audio_message.index_messages
         )
     return msg
 

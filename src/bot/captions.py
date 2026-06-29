@@ -35,6 +35,22 @@ class ChapterPage:
     label: str
 
 
+@dataclass(frozen=True)
+class AudioMessage:
+    """How to render one audio message's chapters in the normal send path.
+
+    Exactly one overflow strategy is active:
+
+    - ``reply_markup`` set → paginated chapter pages (``caption`` is page 1).
+    - ``index_messages`` set → four-tier index-message follow-ups.
+    - both empty → the caption fit, nothing more to send.
+    """
+
+    caption: str
+    reply_markup: InlineKeyboardMarkup | None = None
+    index_messages: tuple[str, ...] = field(default_factory=tuple)
+
+
 def _format_timestamp(seconds: int) -> str:
     """Format seconds as a compact Telegram media timestamp.
 
@@ -295,3 +311,39 @@ def _build_chapter_pages_markup(
 
     rows = [buttons[i : i + 5] for i in range(0, len(buttons), 5)]
     return InlineKeyboardMarkup(rows)
+
+
+def _build_audio_message(
+    title: str,
+    chapters: tuple[Chapter, ...] | None,
+    video_id: str | None,
+    *,
+    paginate: bool,
+) -> AudioMessage:
+    """Compose the caption (and any chapter overflow UI) for an audio message.
+
+    - Chapters fit in the 1024-char caption → caption only, no follow-up.
+    - Overflow + ``paginate`` + pages buildable → first chapter page with inline
+      navigation buttons (``_build_chapter_pages`` / ``_build_chapter_pages_markup``).
+    - Overflow otherwise → the four-tier ``_build_caption_result`` index messages.
+
+    The pages path needs ``video_id`` for callback data; when it is missing or the
+    pages cannot be packed (e.g. callback key too long), it degrades to the
+    four-tier fallback so no message is ever sent with dead buttons.
+    """
+    result = _build_caption_result(title, chapters)
+
+    # No overflow (or no chapters): the caption already says everything.
+    if not result.index_messages:
+        return AudioMessage(caption=result.caption)
+
+    # Overflow: prefer paginated pages when enabled and constructible.
+    if paginate and chapters and video_id:
+        pages = _build_chapter_pages(title, chapters)
+        if pages:
+            markup = _build_chapter_pages_markup(video_id, pages)
+            if len(pages) == 1 or markup is not None:
+                return AudioMessage(caption=pages[0].caption, reply_markup=markup)
+
+    # Fallback: original four-tier index-message behavior.
+    return AudioMessage(caption=result.caption, index_messages=result.index_messages)

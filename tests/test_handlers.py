@@ -11,6 +11,7 @@ from telegram.error import BadRequest
 import src.bot.handlers as handlers_module
 from src.bot.handlers import (
     _RATE_LIMIT_CLEANUP_INTERVAL,
+    _build_audio_message,
     _build_caption_result,
     _build_chapter_pages,
     _format_timestamp,
@@ -76,7 +77,7 @@ def make_context(
         settings.PLAYLIST_MAX_TRACKS = 50
         settings.MAX_FILE_SIZE_MB = 2000
         settings.RATE_LIMIT_PER_MINUTE = rate_limit
-        settings.EXPERIMENTAL_CHAPTER_PAGES_ENABLED = False
+        settings.CHAPTER_PAGES_ENABLED = False
 
     if downloader is None:
         downloader = MagicMock()
@@ -258,6 +259,41 @@ class TestHandleUrlFileIdCaching:
             c
             for c in context.bot.send_message.call_args_list
             if c.kwargs.get("reply_to_message_id") == 56
+        ]
+        assert chapter_index_calls == []
+
+    async def test_cache_hit_file_id_overflow_uses_pages_when_enabled(self, tmp_path):
+        """With CHAPTER_PAGES_ENABLED, overflow sends nav buttons, not index replies."""
+        long_name = "A" * 80
+        overflowing_chapters = tuple((i * 60, long_name) for i in range(15))
+
+        update = make_update()
+        cache = MagicMock()
+        cache.exists = AsyncMock(return_value=True)
+        cache.get_file_id = AsyncMock(return_value="AgACAgIA_cached_file_id")
+        cache.get = AsyncMock(return_value=tmp_path / "dQw4w9WgXcQ.m4a")
+        cache.store_file_id = AsyncMock()
+        cache.get_chapters = AsyncMock(return_value=overflowing_chapters)
+        cache.store_chapters = AsyncMock()
+
+        audio_msg = MagicMock()
+        audio_msg.message_id = 58
+        audio_msg.audio = MagicMock(file_id="AgACAgIA_cached_file_id")
+
+        context = make_context(cache=cache)
+        context.bot_data["settings"].CHAPTER_PAGES_ENABLED = True
+        context.bot.send_audio = AsyncMock(return_value=audio_msg)
+
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            await handle_url(update, context)
+
+        # Audio sent with inline navigation markup …
+        assert context.bot.send_audio.call_args.kwargs.get("reply_markup") is not None
+        # … and NO chapter-index follow-up replies.
+        chapter_index_calls = [
+            c
+            for c in context.bot.send_message.call_args_list
+            if c.kwargs.get("reply_to_message_id") == 58
         ]
         assert chapter_index_calls == []
 
@@ -760,6 +796,47 @@ class TestBuildCaptionResult:
         r = _build_caption_result("Podcast " + "X" * 200, chapters)
         for msg in r.index_messages:
             assert len(msg) <= 4096, f"Chunk exceeds 4096: {len(msg)}"
+
+
+class TestBuildAudioMessage:
+    """Unified caption/overflow composition for the normal send path."""
+
+    VIDEO_ID = "dQw4w9WgXcQ"
+    # 15 × ~88-char names overflow the 1024 caption and pack into >1 page.
+    OVERFLOW = tuple((i * 60, "A" * 80) for i in range(15))
+
+    def test_no_chapters_caption_only(self):
+        m = _build_audio_message("Song", None, self.VIDEO_ID, paginate=True)
+        assert m.caption == "🎵 Song"
+        assert m.reply_markup is None
+        assert m.index_messages == ()
+
+    def test_fitting_chapters_no_markup_no_index(self):
+        chapters = ((0, "Intro"), (60, "Verse"), (180, "Chorus"))
+        for paginate in (True, False):
+            m = _build_audio_message("Song", chapters, self.VIDEO_ID, paginate=paginate)
+            assert m.reply_markup is None
+            assert m.index_messages == ()
+            assert "Intro" in m.caption
+
+    def test_overflow_paginate_off_uses_index(self):
+        m = _build_audio_message("Song", self.OVERFLOW, self.VIDEO_ID, paginate=False)
+        assert m.reply_markup is None
+        assert m.index_messages  # legacy four-tier fallback
+        assert len(m.caption) <= 1024
+
+    def test_overflow_paginate_on_uses_pages_and_buttons(self):
+        m = _build_audio_message("Song", self.OVERFLOW, self.VIDEO_ID, paginate=True)
+        assert m.index_messages == ()
+        assert m.reply_markup is not None  # multi-page → nav buttons
+        assert m.caption.startswith("🎵 Song")
+        assert len(m.caption) <= 1024
+
+    def test_overflow_paginate_on_without_video_id_falls_back(self):
+        """No video_id → can't build callback data → legacy index fallback."""
+        m = _build_audio_message("Song", self.OVERFLOW, None, paginate=True)
+        assert m.reply_markup is None
+        assert m.index_messages
 
 
 # ---------------------------------------------------------------------------
@@ -1419,7 +1496,7 @@ class TestHandleChapters:
         downloader.fetch_metadata = AsyncMock()
         downloader.download = AsyncMock()
         context = make_context(cache=cache, downloader=downloader)
-        context.bot_data["settings"].EXPERIMENTAL_CHAPTER_PAGES_ENABLED = True
+        context.bot_data["settings"].CHAPTER_PAGES_ENABLED = True
 
         await handle_chapters(update, context)
 
@@ -1442,7 +1519,7 @@ class TestHandleChapters:
         downloader.download = AsyncMock()
 
         context = make_context(cache=cache, downloader=downloader)
-        context.bot_data["settings"].EXPERIMENTAL_CHAPTER_PAGES_ENABLED = True
+        context.bot_data["settings"].CHAPTER_PAGES_ENABLED = True
         context.bot.send_audio = AsyncMock(
             return_value=MagicMock(audio=MagicMock(file_id="AgACAg_cached_fid"))
         )
@@ -1487,7 +1564,7 @@ class TestHandleChapters:
         downloader.download = AsyncMock()
 
         context = make_context(cache=cache, downloader=downloader)
-        context.bot_data["settings"].EXPERIMENTAL_CHAPTER_PAGES_ENABLED = True
+        context.bot_data["settings"].CHAPTER_PAGES_ENABLED = True
         context.bot.send_audio = AsyncMock(
             return_value=MagicMock(audio=MagicMock(file_id="AgACAg_cached_fid"))
         )
@@ -1529,7 +1606,7 @@ class TestHandleChapters:
         downloader.download = AsyncMock()
 
         context = make_context(cache=cache, downloader=downloader)
-        context.bot_data["settings"].EXPERIMENTAL_CHAPTER_PAGES_ENABLED = True
+        context.bot_data["settings"].CHAPTER_PAGES_ENABLED = True
         context.bot.send_audio = AsyncMock(
             return_value=MagicMock(audio=MagicMock(file_id="AgACAg_cached_fid"))
         )
@@ -1560,7 +1637,7 @@ class TestHandleChapterPageCallback:
         cache = MagicMock()
         cache.get_chapters = AsyncMock(return_value=chapters)
         context = make_context(cache=cache)
-        context.bot_data["settings"].EXPERIMENTAL_CHAPTER_PAGES_ENABLED = True
+        context.bot_data["settings"].CHAPTER_PAGES_ENABLED = True
 
         await handle_chapter_page_callback(update, context)
 
@@ -1593,7 +1670,7 @@ class TestHandleChapterPageCallback:
         cache = MagicMock()
         cache.get_chapters = AsyncMock(return_value=chapters)
         context = make_context(cache=cache)
-        context.bot_data["settings"].EXPERIMENTAL_CHAPTER_PAGES_ENABLED = True
+        context.bot_data["settings"].CHAPTER_PAGES_ENABLED = True
 
         await handle_chapter_page_callback(update, context)
 
@@ -1618,7 +1695,7 @@ class TestHandleChapterPageCallback:
         cache = MagicMock()
         cache.get_chapters = AsyncMock()
         context = make_context(cache=cache)
-        context.bot_data["settings"].EXPERIMENTAL_CHAPTER_PAGES_ENABLED = True
+        context.bot_data["settings"].CHAPTER_PAGES_ENABLED = True
 
         await handle_chapter_page_callback(update, context)
 
@@ -1648,7 +1725,7 @@ class TestHandleChapterPageCallback:
         cache = MagicMock()
         cache.get_chapters = AsyncMock(return_value=chapters)
         context = make_context(cache=cache)
-        context.bot_data["settings"].EXPERIMENTAL_CHAPTER_PAGES_ENABLED = True
+        context.bot_data["settings"].CHAPTER_PAGES_ENABLED = True
 
         await handle_chapter_page_callback(update, context)
 
@@ -1699,7 +1776,9 @@ class TestSendAudioChapterIndex:
         progress.start_upload_animation = AsyncMock()
 
         with patch("src.bot.handlers._extract_thumbnail", return_value=None):
-            await _send_audio(bot, chat_id=999, result=result, progress=progress)
+            await _send_audio(
+                bot, chat_id=999, result=result, progress=progress, paginate=False
+            )
 
         bot.send_message.assert_called()
         call_kwargs = bot.send_message.call_args
@@ -1737,7 +1816,9 @@ class TestSendAudioChapterIndex:
         progress.start_upload_animation = AsyncMock()
 
         with patch("src.bot.handlers._extract_thumbnail", return_value=None):
-            await _send_audio(bot, chat_id=999, result=result, progress=progress)
+            await _send_audio(
+                bot, chat_id=999, result=result, progress=progress, paginate=False
+            )
 
         bot.send_message.assert_not_called()
 
@@ -1777,7 +1858,9 @@ class TestSendAudioChapterIndex:
 
         # Must not raise even though send_message always fails
         with patch("src.bot.handlers._extract_thumbnail", return_value=None):
-            await _send_audio(bot, chat_id=999, result=result, progress=progress)
+            await _send_audio(
+                bot, chat_id=999, result=result, progress=progress, paginate=False
+            )
 
         # send_audio still succeeded
         bot.send_audio.assert_called_once()
@@ -1826,7 +1909,9 @@ class TestSendAudioChapterIndex:
         progress.start_upload_animation = AsyncMock()
 
         with patch("src.bot.handlers._extract_thumbnail", return_value=None):
-            await _send_audio(bot, chat_id=999, result=result, progress=progress)
+            await _send_audio(
+                bot, chat_id=999, result=result, progress=progress, paginate=False
+            )
 
         # send_message must have been called more than once (continued after failure)
         assert bot.send_message.call_count > 1

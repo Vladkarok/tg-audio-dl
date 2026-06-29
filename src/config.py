@@ -51,7 +51,11 @@ class Settings(BaseSettings):
     DOWNLOAD_TIMEOUT_SECONDS: int = 1800
     TMP_MAX_AGE_SECONDS: int = 3600
     TMP_CLEANUP_INTERVAL_SECONDS: int = 900
-    EXPERIMENTAL_CHAPTER_PAGES_ENABLED: bool = False
+    # Chapter overflow rendering. When True (default), tracks whose chapter list
+    # overflows the 1024-char caption are sent as paginated chapter pages with
+    # inline navigation buttons, and the /chapters command is available. Set to
+    # False to fall back to the legacy multi-message chapter index.
+    CHAPTER_PAGES_ENABLED: bool = True
 
     # Telegram HTTPX connection pool: how long a request waits for a free
     # connection before failing instead of blocking forever.
