@@ -985,10 +985,25 @@ async def _cache_and_upload_one(
     except Exception:
         logger.exception("Cache put failed for video_id=%s", result.video_id)
 
+    # Persist chapters BEFORE sending so the page-navigation callback can always
+    # rebuild pages from the cache. If the store fails, fall back to a non-paginated
+    # message rather than shipping buttons whose callback would find no chapters.
+    chapters_stored = False
+    if result.chapters:
+        try:
+            await cache.store_chapters(result.video_id, result.chapters)
+            chapters_stored = True
+        except Exception:
+            logger.warning(
+                "Failed to store chapters for %s", result.video_id, exc_info=True
+            )
+
     send_result = (
         dataclasses.replace(result, file_path=stored_path) if stored_path else result
     )
-    msg = await _send_audio(bot, chat_id, send_result, progress, paginate=paginate)
+    msg = await _send_audio(
+        bot, chat_id, send_result, progress, paginate=paginate and chapters_stored
+    )
     if msg.audio:
         try:
             await cache.store_file_id(result.video_id, msg.audio.file_id)
@@ -997,13 +1012,6 @@ async def _cache_and_upload_one(
                 "Failed to store file_id for %s — fast resend unavailable",
                 result.video_id,
                 exc_info=True,
-            )
-    if result.chapters:
-        try:
-            await cache.store_chapters(result.video_id, result.chapters)
-        except Exception:
-            logger.warning(
-                "Failed to store chapters for %s", result.video_id, exc_info=True
             )
 
 

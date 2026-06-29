@@ -14,6 +14,7 @@ from src.bot.handlers import (
     _build_audio_message,
     _build_caption_result,
     _build_chapter_pages,
+    _extract_chapter_page_title,
     _format_timestamp,
     _normalize_chapters,
     _user_request_times,
@@ -449,6 +450,77 @@ class TestHandleUrlCacheMiss:
         context.bot.delete_message.assert_called_once()
 
 
+class TestHandleUrlChapterPagesOnDownload:
+    """Fresh-download overflow must persist chapters before shipping nav buttons."""
+
+    OVERFLOW = tuple((i * 60, "A" * 80) for i in range(15))
+
+    def _result_with_chapters(self):
+        return DownloadResult(
+            file_path=Path("/tmp/dQw4w9WgXcQ.m4a"),
+            video_id="dQw4w9WgXcQ",
+            title="Long Pod",
+            artist=None,
+            duration_seconds=180,
+            thumbnail_url=None,
+            file_size_bytes=1024,
+            chapters=self.OVERFLOW,
+        )
+
+    async def test_chapters_stored_before_send_and_buttons_attached(self):
+        update = make_update()
+        context = make_context()
+        context.bot_data["settings"].CHAPTER_PAGES_ENABLED = True
+        context.bot_data["downloader"].download = AsyncMock(
+            return_value=[self._result_with_chapters()]
+        )
+
+        order: list[str] = []
+        context.bot_data["cache"].store_chapters = AsyncMock(
+            side_effect=lambda *a, **k: order.append("store")
+        )
+
+        async def send_audio(*a, **k):
+            order.append("send")
+            return MagicMock(message_id=70, audio=MagicMock(file_id="fid"))
+
+        context.bot.send_audio = AsyncMock(side_effect=send_audio)
+
+        with (
+            patch("asyncio.sleep", new_callable=AsyncMock),
+            patch("pathlib.Path.open", mock_open(read_data=b"x")),
+            patch("src.bot.handlers._extract_thumbnail", return_value=None),
+        ):
+            await handle_url(update, context)
+
+        assert order[:2] == ["store", "send"]  # persisted before the callback can fire
+        assert context.bot.send_audio.call_args.kwargs.get("reply_markup") is not None
+
+    async def test_store_failure_disables_buttons(self):
+        update = make_update()
+        context = make_context()
+        context.bot_data["settings"].CHAPTER_PAGES_ENABLED = True
+        context.bot_data["downloader"].download = AsyncMock(
+            return_value=[self._result_with_chapters()]
+        )
+        context.bot_data["cache"].store_chapters = AsyncMock(
+            side_effect=Exception("disk full")
+        )
+        context.bot.send_audio = AsyncMock(
+            return_value=MagicMock(message_id=71, audio=MagicMock(file_id="fid"))
+        )
+
+        with (
+            patch("asyncio.sleep", new_callable=AsyncMock),
+            patch("pathlib.Path.open", mock_open(read_data=b"x")),
+            patch("src.bot.handlers._extract_thumbnail", return_value=None),
+        ):
+            await handle_url(update, context)
+
+        # store failed → no dead buttons; legacy index path instead
+        assert context.bot.send_audio.call_args.kwargs.get("reply_markup") is None
+
+
 # ---------------------------------------------------------------------------
 # URL handler — error / edge cases
 # ---------------------------------------------------------------------------
@@ -837,6 +909,19 @@ class TestBuildAudioMessage:
         m = _build_audio_message("Song", self.OVERFLOW, None, paginate=True)
         assert m.reply_markup is None
         assert m.index_messages
+
+
+class TestChapterPageTitleNormalization:
+    """Page titles must round-trip through the callback's caption extraction."""
+
+    def test_newline_title_collapsed_to_one_line(self):
+        chapters = tuple((i * 60, "A" * 80) for i in range(15))
+        pages = _build_chapter_pages("Line1\nLine2", chapters)
+        assert pages
+        first_line = pages[0].caption.splitlines()[0]
+        assert first_line == "🎵 Line1 Line2"
+        # The callback rebuilds pages from this extracted title — it must match.
+        assert _extract_chapter_page_title(pages[0].caption) == "Line1 Line2"
 
 
 # ---------------------------------------------------------------------------

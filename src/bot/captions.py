@@ -253,7 +253,10 @@ def _build_chapter_pages(
     normalized = _normalize_chapters(chapters)
     if not normalized:
         return ()
-    title = clean_title(title) or "Untitled"
+    # Collapse to a single line: the page header puts the title on its own line
+    # and the callback handler reconstructs it from that first line, so an
+    # embedded newline would desync the rebuilt pages from the sent ones.
+    title = " ".join((clean_title(title) or "Untitled").split()) or "Untitled"
 
     entries = [
         (index, f"{_format_timestamp(start)} - {name}")
