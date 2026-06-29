@@ -118,9 +118,11 @@ def clear_rate_limit_state():
     """Reset the in-memory rate-limit dict before every test."""
     _user_request_times.clear()
     handlers_module._chapter_page_edit_locks.clear()
+    handlers_module._media_download_locks.clear()
     yield
     _user_request_times.clear()
     handlers_module._chapter_page_edit_locks.clear()
+    handlers_module._media_download_locks.clear()
 
 
 class TestStartHandler:
@@ -460,6 +462,51 @@ class TestHandleUrlCacheMiss:
             await handle_url(update, context)
 
         context.bot.delete_message.assert_called_once()
+
+    async def test_concurrent_same_url_downloads_once(self, tmp_path):
+        """Two simultaneous requests for one uncached URL trigger a single download."""
+        cached_file = tmp_path / "dQw4w9WgXcQ.m4a"
+        cached_file.write_bytes(b"audio")
+
+        stored: set[str] = set()
+        cache = MagicMock()
+        cache.exists = AsyncMock(side_effect=lambda vid: vid in stored)
+        cache.get = AsyncMock(return_value=cached_file)
+        cache.get_file_id = AsyncMock(return_value=None)
+        cache.store_file_id = AsyncMock()
+        cache.get_chapters = AsyncMock(return_value=None)
+        cache.store_chapters = AsyncMock()
+
+        async def put(vid, path):
+            stored.add(vid)
+            return cached_file
+
+        cache.put = AsyncMock(side_effect=put)
+
+        download_calls = 0
+
+        async def slow_download(*a, **k):
+            nonlocal download_calls
+            download_calls += 1
+            return [make_download_result()]
+
+        downloader = MagicMock()
+        downloader.download = AsyncMock(side_effect=slow_download)
+
+        context = make_context(cache=cache, downloader=downloader)
+
+        with (
+            patch("asyncio.sleep", new_callable=AsyncMock),
+            patch("pathlib.Path.open", mock_open(read_data=b"x")),
+            patch("src.bot.handlers._extract_thumbnail", return_value=None),
+        ):
+            await asyncio.gather(
+                handle_url(make_update(), context),
+                handle_url(make_update(), context),
+            )
+
+        # The per-media lock serializes the two; the second hits the cache.
+        assert download_calls == 1
 
 
 class TestHandleUrlChapterPagesOnDownload:

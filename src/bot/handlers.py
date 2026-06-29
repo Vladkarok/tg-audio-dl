@@ -13,6 +13,7 @@ import contextlib
 import dataclasses
 import logging
 import time
+from collections.abc import AsyncIterator
 from pathlib import Path
 
 from telegram import Bot, Message, Update
@@ -84,6 +85,38 @@ _rate_limit_lock = asyncio.Lock()
 _rate_limit_request_count: int = 0
 _RATE_LIMIT_CLEANUP_INTERVAL: int = 20
 _chapter_page_edit_locks: dict[tuple[int, int], asyncio.Lock] = {}
+
+# Per-media download locks (lock, refcount). Serialize the whole cache-check →
+# download → cache-put sequence for one video so concurrent requests for the
+# same uncached URL don't each trigger a redundant download — the second waits,
+# then sees the entry the first just cached. Keyed by cache video_id; playlists
+# (no single video_id) are not deduplicated here. Dict mutations are synchronous
+# (no await between them) so no guard lock is needed.
+_media_download_locks: dict[str, tuple[asyncio.Lock, int]] = {}
+
+
+@contextlib.asynccontextmanager
+async def _media_download_lock(video_id: str) -> AsyncIterator[None]:
+    """Acquire the per-media download lock, refcounting so it's cleaned up."""
+    entry = _media_download_locks.get(video_id)
+    if entry is None:
+        lock = asyncio.Lock()
+        _media_download_locks[video_id] = (lock, 1)
+    else:
+        lock, count = entry
+        _media_download_locks[video_id] = (lock, count + 1)
+    try:
+        async with lock:
+            yield
+    finally:
+        current = _media_download_locks.get(video_id)
+        if current is not None:
+            existing_lock, count = current
+            if count <= 1:
+                _media_download_locks.pop(video_id, None)
+            else:
+                _media_download_locks[video_id] = (existing_lock, count - 1)
+
 
 _WELCOME_TEXT = (
     "👋 Welcome! Send me a YouTube video or playlist URL and I will download "
@@ -759,6 +792,32 @@ def _chapter_page_message_key(message: object | None) -> tuple[int, int] | None:
 
 
 async def _process_url(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    progress: ProgressManager,
+    parsed_url: ParsedURL,
+    force_redownload: bool = False,
+) -> None:
+    """Serialize same-video processing, then run the cache/download/upload flow.
+
+    Single videos hold a per-media lock for the whole sequence so two concurrent
+    requests for the same uncached URL don't both download it — the second waits
+    and then hits the cache the first populated. Playlists have no single cache
+    key and are not deduplicated.
+    """
+    video_id = parsed_url.video_id
+    if video_id is None:
+        await _process_url_locked(
+            update, context, progress, parsed_url, force_redownload
+        )
+        return
+    async with _media_download_lock(video_id):
+        await _process_url_locked(
+            update, context, progress, parsed_url, force_redownload
+        )
+
+
+async def _process_url_locked(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
     progress: ProgressManager,
