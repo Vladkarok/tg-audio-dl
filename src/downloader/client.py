@@ -41,11 +41,29 @@ logger = logging.getLogger(__name__)
 # Accepts YouTube 11-char IDs, SoundCloud numeric IDs, and sc_slug cache keys
 _TRACK_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
-# Audio file discovery. Preferred order is tried by exact name first; the wider
-# set guards the glob fallback so sidecars (.jpg/.info.json/.part) are ignored.
+# Audio file discovery. The preferred extensions are tried by exact name first.
+# The glob fallback then accepts any remaining file EXCEPT a known sidecar — a
+# denylist (not an audio allowlist) so unusual but legitimate audio containers
+# yt-dlp may emit (weba, m4b, alac, …) are never wrongly rejected, while
+# thumbnails / metadata / partial files are.
 _PREFERRED_AUDIO_EXTS: tuple[str, ...] = ("m4a", "webm", "opus", "mp3", "ogg")
-_AUDIO_EXTS: frozenset[str] = frozenset(
-    {*_PREFERRED_AUDIO_EXTS, "aac", "flac", "wav", "oga", "mka"}
+_SIDECAR_EXTS: frozenset[str] = frozenset(
+    {
+        "jpg",
+        "jpeg",
+        "png",
+        "webp",
+        "gif",
+        "json",  # also matches the .info.json sidecar (suffix is .json)
+        "part",  # yt-dlp partial download
+        "ytdl",  # yt-dlp resume state
+        "temp",
+        "description",
+        "vtt",
+        "srt",
+        "lrc",
+        "txt",
+    }
 )
 
 
@@ -729,10 +747,10 @@ class AudioDownloader:
             if candidate.exists():
                 return candidate
 
-        # Fallback: any file whose extension is a recognised audio format,
-        # to tolerate an unexpected container yt-dlp may have produced.
+        # Fallback: any remaining file that is not a known sidecar, to tolerate
+        # an unexpected audio container yt-dlp may have produced.
         for candidate in sorted(self._download_dir.glob(f"{ydl_id}.*")):
-            if candidate.suffix.lower().lstrip(".") in _AUDIO_EXTS:
+            if candidate.suffix.lower().lstrip(".") not in _SIDECAR_EXTS:
                 return candidate
 
         raise DownloadError(

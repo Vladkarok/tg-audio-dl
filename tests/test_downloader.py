@@ -382,6 +382,24 @@ class TestFindAudioFileIgnoresSidecars:
         ):
             await downloader.download(_make_parsed_single())
 
+    async def test_unusual_audio_container_accepted(self, tmp_path: Path) -> None:
+        """An audio container not in the preferred list (e.g. .weba) is still used."""
+        # Only a .weba file plus a thumbnail sidecar are present.
+        audio = tmp_path / f"{VIDEO_ID}.weba"
+        audio.write_bytes(b"x" * 1024)
+        (tmp_path / f"{VIDEO_ID}.jpg").write_bytes(b"img")
+        downloader = AudioDownloader(
+            download_dir=tmp_path, max_file_size_bytes=10 * 1024 * 1024
+        )
+
+        with patch(
+            "src.downloader.client.yt_dlp.YoutubeDL",
+            side_effect=lambda opts: _make_ydl_mock(FAKE_SINGLE_INFO),
+        ):
+            results = await downloader.download(_make_parsed_single())
+
+        assert results[0].file_path == audio
+
 
 # ---------------------------------------------------------------------------
 # test_download_playlist_respects_max_tracks
