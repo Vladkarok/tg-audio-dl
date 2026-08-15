@@ -16,6 +16,9 @@ env:
 jobs:
   update:
     runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.check.outputs.changed }}
+      tag: ${{ steps.tag.outputs.tag }}
 
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
@@ -89,6 +92,7 @@ jobs:
           fi
 
       - name: Bump patch tag and push
+        id: tag
         if: steps.check.outputs.changed == 'true'
         env:
           OLD: ${{ steps.check.outputs.old }}
@@ -106,3 +110,16 @@ jobs:
           git commit -m "chore: bump yt-dlp ${OLD} → ${NEW}"
           git tag "$NEW_TAG"
           git push origin HEAD:master "$NEW_TAG"
+          echo "tag=$NEW_TAG" >> "$GITHUB_OUTPUT"
+
+  # This push used GITHUB_TOKEN, so the tag will NOT trigger CI/CD on its own.
+  # Call it explicitly, or the bumped yt-dlp never reaches production.
+  release:
+    needs: update
+    if: needs.update.outputs.changed == 'true'
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/ci.yml
+    with:
+      build_tag: ${{ needs.update.outputs.tag }}

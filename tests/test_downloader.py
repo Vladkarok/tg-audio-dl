@@ -1644,6 +1644,127 @@ class TestDownloadIsolation:
         assert not any(p.name.startswith(".dl-") for p in tmp_path.iterdir())
 
 
+class TestTransientRetry:
+    """A transient yt-dlp failure is retried with a fresh extraction."""
+
+    @staticmethod
+    def _failing_then_writing_cls(
+        errors: list[Exception],
+        captured_dirs: list[Path],
+    ):
+        """YoutubeDL factory that raises one error per entry in *errors*,
+        then writes the audio file on the following call.
+        """
+        pending = iter(errors)
+
+        def factory(opts):
+            out_dir = Path(opts["outtmpl"]).parent
+            captured_dirs.append(out_dir)
+            mock_ydl = _make_ydl_mock(FAKE_SINGLE_INFO)
+            error = next(pending, None)
+
+            def extract(url, download=True):  # noqa: FBT002
+                if error is not None:
+                    raise error
+                out_dir.mkdir(parents=True, exist_ok=True)
+                (out_dir / f"{VIDEO_ID}.m4a").write_bytes(b"x" * 1024)
+                return FAKE_SINGLE_INFO
+
+            mock_ydl.extract_info.side_effect = extract
+            return mock_ydl
+
+        return factory
+
+    async def test_403_is_retried_and_succeeds(self, tmp_path: Path) -> None:
+        """The observed production failure: HTTP 403 on the media URL."""
+        import yt_dlp
+
+        captured_dirs: list[Path] = []
+        downloader = AudioDownloader(download_dir=tmp_path, max_file_size_bytes=10**9)
+        errors = [
+            yt_dlp.utils.DownloadError(
+                "ERROR: unable to download video data: HTTP Error 403: Forbidden"
+            )
+        ]
+
+        with (
+            patch("src.downloader.client._RETRY_DELAYS_SECONDS", (0.0, 0.0)),
+            patch(
+                "src.downloader.client.yt_dlp.YoutubeDL",
+                side_effect=self._failing_then_writing_cls(errors, captured_dirs),
+            ),
+        ):
+            results = await downloader.download(_make_parsed_single())
+
+        # Two attempts, each in its own fresh isolation dir.
+        assert len(captured_dirs) == 2
+        assert captured_dirs[0] != captured_dirs[1]
+        assert results[0].file_path == tmp_path / f"{VIDEO_ID}.m4a"
+        assert not any(p.name.startswith(".dl-") for p in tmp_path.iterdir())
+
+    async def test_retries_are_exhausted(self, tmp_path: Path) -> None:
+        """After the attempt budget is spent the error reaches the caller."""
+        import yt_dlp
+
+        captured_dirs: list[Path] = []
+        downloader = AudioDownloader(download_dir=tmp_path, max_file_size_bytes=10**9)
+        errors = [
+            yt_dlp.utils.DownloadError("ERROR: HTTP Error 403: Forbidden")
+            for _ in range(3)
+        ]
+
+        with (
+            patch("src.downloader.client._RETRY_DELAYS_SECONDS", (0.0, 0.0)),
+            patch(
+                "src.downloader.client.yt_dlp.YoutubeDL",
+                side_effect=self._failing_then_writing_cls(errors, captured_dirs),
+            ),
+            pytest.raises(DownloadError),
+        ):
+            await downloader.download(_make_parsed_single())
+
+        assert len(captured_dirs) == 3
+        assert not any(p.name.startswith(".dl-") for p in tmp_path.iterdir())
+
+    async def test_non_transient_error_is_not_retried(self, tmp_path: Path) -> None:
+        """A deterministic failure fails fast instead of burning the budget."""
+        import yt_dlp
+
+        captured_dirs: list[Path] = []
+        downloader = AudioDownloader(download_dir=tmp_path, max_file_size_bytes=10**9)
+        errors = [yt_dlp.utils.UnsupportedError("https://example.com/nope")]
+
+        with (
+            patch(
+                "src.downloader.client.yt_dlp.YoutubeDL",
+                side_effect=self._failing_then_writing_cls(errors, captured_dirs),
+            ),
+            pytest.raises(DownloadError),
+        ):
+            await downloader.download(_make_parsed_single())
+
+        assert len(captured_dirs) == 1
+
+    async def test_unavailable_video_is_not_retried(self, tmp_path: Path) -> None:
+        """A private/removed video is final — no point re-extracting."""
+        import yt_dlp
+
+        captured_dirs: list[Path] = []
+        downloader = AudioDownloader(download_dir=tmp_path, max_file_size_bytes=10**9)
+        errors = [yt_dlp.utils.DownloadError("ERROR: Private video. Sign in ...")]
+
+        with (
+            patch(
+                "src.downloader.client.yt_dlp.YoutubeDL",
+                side_effect=self._failing_then_writing_cls(errors, captured_dirs),
+            ),
+            pytest.raises(VideoUnavailableError),
+        ):
+            await downloader.download(_make_parsed_single())
+
+        assert len(captured_dirs) == 1
+
+
 # ===========================================================================
 # Playlist sparse / None entries
 # ===========================================================================

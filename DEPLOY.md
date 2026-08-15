@@ -125,6 +125,15 @@ The image is pushed to GHCR with two tags:
 - `ghcr.io/<owner>/youtube-download-bot:v1.2.3` — pinned version used for the deploy
 - `ghcr.io/<owner>/youtube-download-bot:latest` — always points to the last release
 
+### Automated yt-dlp releases
+
+`update-yt-dlp.yml` bumps the lockfile daily, commits, and pushes a patch tag.
+That push uses the default `GITHUB_TOKEN`, and GitHub does not start workflow
+runs for `GITHUB_TOKEN` pushes — so the tag alone deploys nothing. The updater
+therefore calls `ci.yml` directly as a reusable workflow (`build_tag` input),
+which builds and deploys the tag it just pushed. Do not "simplify" that call
+away: without it the bumped yt-dlp is tagged but never reaches the server.
+
 ---
 
 ## Proxy setup (required on datacenter IPs)

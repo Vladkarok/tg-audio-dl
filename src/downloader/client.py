@@ -203,6 +203,44 @@ def _is_unavailable_error(message: str) -> bool:
     return any(marker in lower for marker in _UNAVAILABLE_MARKERS)
 
 
+# Markers for failures a fresh extraction is likely to clear. YouTube signs
+# each media URL for the requesting session, and an expired or rejected
+# signature surfaces as "HTTP Error 403: Forbidden" at connection setup —
+# yt-dlp treats that as fatal and never re-extracts. Retrying the whole
+# extract_info gets a newly signed URL. Server-side 5xx, rate limits, and
+# dropped connections are transient in the same way. Errors NOT listed here
+# (unsupported URL, no extractor) are deterministic; retrying only delays the
+# user's error message.
+_TRANSIENT_MARKERS = (
+    "403",
+    "429",
+    "500",
+    "502",
+    "503",
+    "too many requests",
+    "unable to download video data",
+    "connection reset",
+    "connection aborted",
+    "connection timed out",
+    "read timed out",
+    "temporary failure",
+    "incomplete read",
+    "remote end closed",
+)
+
+# Total attempts per download, and the wait before each retry.
+_DOWNLOAD_ATTEMPTS = 3
+_RETRY_DELAYS_SECONDS = (2.0, 5.0)
+
+
+def _is_transient_error(exc: DownloadError) -> bool:
+    """Return True when *exc* is worth retrying with a fresh extraction."""
+    if isinstance(exc, (VideoUnavailableError, FileTooLargeError)):
+        return False
+    lower = str(exc).lower()
+    return any(marker in lower for marker in _TRANSIENT_MARKERS)
+
+
 def _parse_chapters(info: dict[str, Any]) -> tuple[Chapter, ...] | None:
     """Extract and normalise the ``chapters`` field from a yt-dlp info dict.
 
@@ -479,39 +517,13 @@ class AudioDownloader:
         Writes into a private per-download directory so a lingering timed-out
         yt-dlp thread can never clobber a concurrent request for the same id.
         """
-        # Isolate this download in its own subdir, keyed by a uuid token, so the
-        # flat ``{id}.{ext}`` output path is never shared with another (possibly
-        # lingering) download of the same video id.
-        dl_dir = self._download_dir / f".dl-{uuid.uuid4().hex}"
-        dl_dir.mkdir(parents=True, exist_ok=True)
-
-        ydl_opts = self._build_opts(
+        info, dl_dir = await self._extract_with_retry(
+            url=url,
+            yt_id=yt_id,
             noplaylist=noplaylist,
             progress_callback=progress_callback,
             loop=loop,
-            output_dir=dl_dir,
         )
-
-        try:
-            info = await asyncio.wait_for(
-                _run_blocking(self._run_ydl, ydl_opts, url),
-                timeout=self._download_timeout,
-            )
-        except TimeoutError as exc:
-            # Remove this download's dir; a lingering worker thread that later
-            # recreates files in its own orphaned copy is reaped by the
-            # periodic stale-tmp job. Flat-path cleanup is defence-in-depth.
-            self._cleanup_partials(yt_id)
-            self._cleanup_download_dir(dl_dir)
-            raise DownloadError(
-                f"Download timed out after {self._download_timeout}s"
-            ) from exc
-        except DownloadError:
-            # Covers VideoUnavailableError too — partials must not linger
-            # regardless of how the failure was classified.
-            self._cleanup_partials(yt_id)
-            self._cleanup_download_dir(dl_dir)
-            raise
 
         try:
             return self._build_result(info, dl_dir, cache_id=cache_id)
@@ -520,6 +532,76 @@ class AudioDownloader:
             # _build_result; whatever remains here (sidecars, or an oversized
             # rejected file) is safe to drop with the per-download dir.
             self._cleanup_download_dir(dl_dir)
+
+    async def _extract_with_retry(
+        self,
+        url: str,
+        yt_id: str | None,
+        noplaylist: bool,
+        progress_callback: ProgressCallback | None,
+        loop: asyncio.AbstractEventLoop,
+    ) -> tuple[dict[str, Any], Path]:
+        """Run yt-dlp until it succeeds or a non-transient failure occurs.
+
+        Returns the info_dict and the isolation dir the audio was written into
+        (the caller owns removing it). Each attempt gets a *fresh* dir so a
+        partial write from a failed attempt can never be mistaken for the
+        audio, and a fresh extraction so YouTube re-signs the media URL —
+        that signature is what a transient 403 usually means has gone stale.
+
+        Timeouts are not retried: the caller already waited the full
+        ``download_timeout``, and a second wait would double that budget.
+        """
+        for attempt in range(1, _DOWNLOAD_ATTEMPTS + 1):
+            # Isolate this attempt in its own subdir, keyed by a uuid token, so
+            # the flat ``{id}.{ext}`` output path is never shared with another
+            # (possibly lingering) download of the same video id.
+            dl_dir = self._download_dir / f".dl-{uuid.uuid4().hex}"
+            dl_dir.mkdir(parents=True, exist_ok=True)
+
+            ydl_opts = self._build_opts(
+                noplaylist=noplaylist,
+                progress_callback=progress_callback,
+                loop=loop,
+                output_dir=dl_dir,
+            )
+
+            try:
+                info = await asyncio.wait_for(
+                    _run_blocking(self._run_ydl, ydl_opts, url),
+                    timeout=self._download_timeout,
+                )
+            except TimeoutError as exc:
+                # Remove this download's dir; a lingering worker thread that
+                # later recreates files in its own orphaned copy is reaped by
+                # the periodic stale-tmp job. Flat-path cleanup is
+                # defence-in-depth.
+                self._cleanup_partials(yt_id)
+                self._cleanup_download_dir(dl_dir)
+                raise DownloadError(
+                    f"Download timed out after {self._download_timeout}s"
+                ) from exc
+            except DownloadError as exc:
+                # Covers VideoUnavailableError too — partials must not linger
+                # regardless of how the failure was classified.
+                self._cleanup_partials(yt_id)
+                self._cleanup_download_dir(dl_dir)
+                if attempt == _DOWNLOAD_ATTEMPTS or not _is_transient_error(exc):
+                    raise
+                delay = _RETRY_DELAYS_SECONDS[attempt - 1]
+                logger.warning(
+                    "Transient download failure (attempt %d/%d), retrying in %.0fs: %s",
+                    attempt,
+                    _DOWNLOAD_ATTEMPTS,
+                    delay,
+                    exc,
+                )
+                await asyncio.sleep(delay)
+            else:
+                return info, dl_dir
+
+        # Unreachable: the final attempt either returns or re-raises above.
+        raise DownloadError("Download failed after all attempts")
 
     async def _fetch_playlist_metadata(
         self,
