@@ -2,15 +2,27 @@ name: Update yt-dlp
 
 on:
   schedule:
-    - cron: "0 3 * * *"  # Every day at 03:00 UTC
+    # Every 4 hours. yt-dlp ships a fix and the bot is broken until we take it,
+    # so the check is cheap (~15s, no-op unless the lock actually moves) and
+    # waiting a whole day to notice is not.
+    - cron: "0 */4 * * *"
   workflow_dispatch:
+    inputs:
+      ignore_cooldown:
+        description: "Adopt the newest release even if younger than the cooldown"
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: write
 
 env:
   # Supply-chain cooldown: never adopt a release younger than this many days,
-  # so a compromised upload is likely yanked before we ever lock it.
+  # so a compromised upload is likely yanked before we ever lock it. Note this
+  # dominates the total delay, not the schedule above: a release is adopted
+  # between COOLDOWN and COOLDOWN + 4h after it is published. Manual dispatch
+  # with ignore_cooldown skips it when the bot is broken right now.
   YTDLP_COOLDOWN_DAYS: "3"
 
 jobs:
@@ -32,7 +44,14 @@ jobs:
 
       - name: Resolve cooldown-compliant yt-dlp version
         id: target
+        env:
+          IGNORE_COOLDOWN: ${{ github.event.inputs.ignore_cooldown }}
         run: |
+          if [ "$IGNORE_COOLDOWN" = "true" ]; then
+            echo "::warning::Supply-chain cooldown bypassed by manual dispatch"
+            YTDLP_COOLDOWN_DAYS=0
+            export YTDLP_COOLDOWN_DAYS
+          fi
           curl -sf https://pypi.org/pypi/yt-dlp/json -o /tmp/ytdlp.json
           TARGET=$(python3 - <<'PY'
           import datetime
