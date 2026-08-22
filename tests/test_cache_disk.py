@@ -726,3 +726,12 @@ class TestFindByFileId:
     async def test_missing_cache_dir_is_safe(self, tmp_path: Path) -> None:
         cache = DiskCache(tmp_path / "nope", max_size_bytes=10**9)
         assert await cache.find_by_file_id("FILEID_A") is None
+
+    async def test_duplicate_file_ids_refuse_to_guess(self, tmp_path: Path) -> None:
+        """Two tracks claiming one file_id means the sidecars disagree with
+        Telegram; picking one would write chapters onto the wrong track."""
+        cache = DiskCache(tmp_path, max_size_bytes=10**9)
+        await cache.store_file_id("AAAAAAAAAAA", "SHARED")
+        await cache.store_file_id("BBBBBBBBBBB", "SHARED")
+
+        assert await cache.find_by_file_id("SHARED") is None

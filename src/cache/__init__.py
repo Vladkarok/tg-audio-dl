@@ -104,14 +104,15 @@ class CompositeCache(CacheBackend):
         return await self.s3.exists(video_id)
 
     async def evict(self, video_id: str) -> None:
-        # S3 first: S3Cache.evict swallows delete failures, so confirm the copy
-        # is really gone before dropping hand-entered chapters. Those cannot be
-        # re-fetched from anywhere, and destroying them while an old copy of the
-        # audio survives in S3 turns a partial reset into a one-way loss.
-        await self.s3.evict(video_id)
-        if await self.s3.exists(video_id):
+        # S3 first, and only drop hand-entered chapters once the S3 copy is
+        # confirmed gone. They cannot be re-fetched from anywhere, so destroying
+        # them while an old copy of the audio survives in S3 turns a partial
+        # reset into a one-way loss. evict_confirmed reports the difference
+        # between a real deletion and an outage; exists() cannot, because it
+        # answers "no" for both.
+        if not await self.s3.evict_confirmed(video_id):
             logger.warning(
-                "CompositeCache: S3 copy of %s survived eviction — keeping "
+                "CompositeCache: could not confirm S3 eviction of %s — keeping "
                 "hand-entered chapters",
                 video_id,
             )

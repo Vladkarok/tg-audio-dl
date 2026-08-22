@@ -17,7 +17,7 @@ from collections.abc import AsyncIterator
 from pathlib import Path
 
 from telegram import Bot, Message, Update
-from telegram.error import BadRequest
+from telegram.error import BadRequest, TelegramError
 from telegram.ext import ContextTypes
 
 from src.bot.captions import (
@@ -472,6 +472,22 @@ async def handle_timestamps(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     if body.strip() == "" and first_line.strip().lower().endswith(" clear"):
         async with _media_download_lock(video_id):
             removed = await cache.delete_manual_chapters(video_id)
+            # Fall back to whatever the uploader published, if anything.
+            remaining = await cache.get_chapters(video_id)
+            if removed and replied is not None and parsed_url is None:
+                # The message is still showing the list we just deleted.
+                await _apply_chapters_in_place(
+                    context,
+                    replied,
+                    video_id=video_id,
+                    title=_usable_track_title(
+                        getattr(replied_audio, "title", None), video_id
+                    )
+                    or _extract_chapter_page_title(getattr(replied, "caption", None))
+                    or video_id,
+                    chapters=remaining,
+                    paginate=settings.CHAPTER_PAGES_ENABLED,
+                )
         await update.message.reply_text(
             "Removed your timestamps for this track."
             if removed
@@ -604,10 +620,14 @@ async def _apply_chapters_in_place(
     *,
     video_id: str,
     title: str,
-    chapters: tuple[tuple[int, str], ...],
+    chapters: tuple[tuple[int, str], ...] | None,
     paginate: bool,
 ) -> bool:
     """Rewrite an existing audio message's caption to show *chapters*.
+
+    An empty *chapters* rewrites the caption back to a bare title, which is
+    what /timestamps ... clear needs: the message must stop showing a list
+    that is no longer stored.
 
     Returns False when Telegram refuses the edit (message too old, not ours,
     caption unchanged) so the caller can say so — the chapters are stored
@@ -621,7 +641,10 @@ async def _apply_chapters_in_place(
             caption=audio_message.caption,
             reply_markup=audio_message.reply_markup,
         )
-    except BadRequest:
+    except TelegramError:
+        # Network errors and timeouts land here too: the chapters are already
+        # stored, so the caller reports "saved but not shown" rather than
+        # letting the failure escape as an unhandled error.
         logger.warning(
             "Could not edit caption of message %s for %s",
             getattr(message, "message_id", "?"),

@@ -193,6 +193,17 @@ class S3Cache(CacheBackend):
             return False
 
     async def evict(self, video_id: str) -> None:
+        await self.evict_confirmed(video_id)
+
+    async def evict_confirmed(self, video_id: str) -> bool:
+        """Delete the object and report whether it is *definitely* gone.
+
+        :meth:`evict` and :meth:`exists` both fold S3 errors into a result that
+        looks normal (nothing raised, "does not exist"). That is fine for the
+        read paths, but a caller about to destroy irreplaceable local data on
+        the strength of "S3 no longer has it" has to be able to tell a real
+        absence from an outage. Only a delete that raised nothing counts.
+        """
         validate_video_id(video_id)
 
         def _delete() -> None:
@@ -207,8 +218,11 @@ class S3Cache(CacheBackend):
             logger.warning(
                 "S3Cache.evict failed for %s: code=%s msg=%s", video_id, code, msg
             )
+            return False
         except Exception:
             logger.warning("S3Cache.evict failed for %s", video_id, exc_info=True)
+            return False
+        return True
 
     async def get_file_id(self, video_id: str) -> str | None:
         """file_ids are local to a single bot instance — not stored in S3."""

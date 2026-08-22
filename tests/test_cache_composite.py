@@ -51,6 +51,7 @@ def _make_mock_s3(
     s3.get.return_value = get_return
     s3.exists.return_value = exists_return
     s3.put.return_value = put_return
+    s3.evict_confirmed.return_value = True
     return s3
 
 
@@ -182,7 +183,8 @@ class TestCompositeCacheEvict:
         await cache.evict("dQw4w9WgXcQ")
 
         disk.evict.assert_called_once_with("dQw4w9WgXcQ")
-        s3.evict.assert_called_once_with("dQw4w9WgXcQ")
+        # evict_confirmed both deletes and reports whether it really happened.
+        s3.evict_confirmed.assert_called_once_with("dQw4w9WgXcQ")
 
 
 # ---------------------------------------------------------------------------
@@ -269,6 +271,7 @@ class TestCompositeManualChapterEviction:
         disk = DiskCache(tmp_path / "disk", max_size_bytes=10**9)
         s3 = MagicMock()
         s3.evict = AsyncMock()
+        s3.evict_confirmed = AsyncMock(return_value=True)
         return CompositeCache(disk=disk, s3=s3), disk, s3
 
     async def test_clean_eviction_drops_them(self, tmp_path: Path) -> None:
@@ -280,11 +283,24 @@ class TestCompositeManualChapterEviction:
 
         assert await disk.get_manual_chapters("AAAAAAAAAAA") is None
 
-    async def test_surviving_s3_copy_keeps_them(self, tmp_path: Path) -> None:
-        """S3Cache.evict swallows failures, so a surviving object is the signal
-        that the reset was not clean."""
+    async def test_unconfirmed_s3_eviction_keeps_them(self, tmp_path: Path) -> None:
+        """A delete S3 did not acknowledge means the reset was not clean."""
         cache, disk, s3 = self._composite(tmp_path)
-        s3.exists = AsyncMock(return_value=True)
+        s3.evict_confirmed = AsyncMock(return_value=False)
+        await disk.store_manual_chapters("AAAAAAAAAAA", ((0, "Intro"),))
+
+        await cache.evict("AAAAAAAAAAA")
+
+        assert await disk.get_manual_chapters("AAAAAAAAAAA") == ((0, "Intro"),)
+
+    async def test_probe_failure_is_not_treated_as_deletion(
+        self, tmp_path: Path
+    ) -> None:
+        """An S3 outage makes exists() answer 'no' too, so eviction must key off
+        the delete result rather than a follow-up probe."""
+        cache, disk, s3 = self._composite(tmp_path)
+        s3.evict_confirmed = AsyncMock(return_value=False)
+        s3.exists = AsyncMock(return_value=False)
         await disk.store_manual_chapters("AAAAAAAAAAA", ((0, "Intro"),))
 
         await cache.evict("AAAAAAAAAAA")

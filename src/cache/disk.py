@@ -15,7 +15,7 @@ from pathlib import Path
 
 import aiofiles
 
-from src.cache.base import CacheBackend, validate_video_id
+from src.cache.base import VIDEO_ID_RE, CacheBackend, validate_video_id
 
 CHUNK_SIZE = 256 * 1024  # 256 KB
 # Telegram file_ids are Base64-encoded and may contain A-Z, a-z, 0-9, _, -, =, .
@@ -214,16 +214,35 @@ class DiskCache(CacheBackend):
         Scans the ``.fid`` sidecars. The cache holds at most a few hundred
         entries and this runs once per /timestamps reply, so a reverse index
         would be extra state to keep in sync for no measurable gain.
+
+        Only the most recent file_id per track is stored, so a reply to an
+        older message (one sent before a /redownload replaced the sidecar) does
+        not resolve. Callers report that and ask for the URL instead, which is
+        why this returns None rather than guessing.
         """
         if not _FILE_ID_RE.fullmatch(file_id) or not self.cache_dir.exists():
             return None
+        matches: list[str] = []
         for path in self.cache_dir.glob("*.fid"):
             try:
-                if path.read_text().strip() == file_id:
-                    return path.name[: -len(".fid")]
+                if path.read_text().strip() != file_id:
+                    continue
             except OSError:
                 continue
-        return None
+            candidate = path.name[: -len(".fid")]
+            if VIDEO_ID_RE.fullmatch(candidate):
+                matches.append(candidate)
+
+        if len(matches) > 1:
+            # Two tracks claiming one file_id means the sidecars disagree with
+            # Telegram. Guessing would write chapters onto the wrong track.
+            logger.warning(
+                "find_by_file_id: %d video_ids share one file_id (%s)",
+                len(matches),
+                ", ".join(sorted(matches)),
+            )
+            return None
+        return matches[0] if matches else None
 
     async def get_chapters(self, video_id: str) -> tuple[tuple[int, str], ...] | None:
         """Return cached chapters from JSON sidecar, or None."""

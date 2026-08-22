@@ -106,6 +106,7 @@ def make_context(
     context.bot.edit_message_text = AsyncMock()
     context.bot.delete_message = AsyncMock()
     context.bot.send_audio = AsyncMock()
+    context.bot.edit_message_caption = AsyncMock()
     context.bot_data = {
         "settings": settings,
         "downloader": downloader,
@@ -2431,6 +2432,56 @@ class TestTimestampsByReply:
         context.bot_data["cache"].delete_manual_chapters.assert_awaited_once_with(
             "dQw4w9WgXcQ"
         )
+
+    async def test_clear_rewrites_the_message_it_replied_to(self):
+        """Otherwise the message keeps showing the list that was just deleted."""
+        update, _ = self._reply_update()
+        update.message.text = "/timestamps clear"
+        context = make_timestamps_context()
+        context.bot_data["cache"].find_by_file_id = AsyncMock(
+            return_value="dQw4w9WgXcQ"
+        )
+        context.bot_data["cache"].delete_manual_chapters = AsyncMock(return_value=True)
+        # Nothing upstream to fall back to.
+        context.bot_data["cache"].get_chapters = AsyncMock(return_value=None)
+
+        await handle_timestamps(update, context)
+
+        caption = context.bot.edit_message_caption.await_args.kwargs["caption"]
+        assert "Intro" not in caption
+        assert "Long Mix" in caption
+
+    async def test_clear_falls_back_to_upstream_chapters(self):
+        update, _ = self._reply_update()
+        update.message.text = "/timestamps clear"
+        context = make_timestamps_context()
+        context.bot_data["cache"].find_by_file_id = AsyncMock(
+            return_value="dQw4w9WgXcQ"
+        )
+        context.bot_data["cache"].delete_manual_chapters = AsyncMock(return_value=True)
+        context.bot_data["cache"].get_chapters = AsyncMock(
+            return_value=((0, "Uploader chapter"),)
+        )
+
+        await handle_timestamps(update, context)
+
+        caption = context.bot.edit_message_caption.await_args.kwargs["caption"]
+        assert "Uploader chapter" in caption
+
+    async def test_network_error_on_edit_is_reported_not_raised(self):
+        from telegram.error import NetworkError
+
+        update, _ = self._reply_update()
+        context = make_timestamps_context()
+        context.bot_data["cache"].find_by_file_id = AsyncMock(
+            return_value="dQw4w9WgXcQ"
+        )
+        context.bot.edit_message_caption = AsyncMock(side_effect=NetworkError("down"))
+
+        await handle_timestamps(update, context)
+
+        context.bot_data["cache"].store_manual_chapters.assert_awaited_once()
+        assert "could not be edited" in update.message.reply_text.await_args.args[0]
 
     async def test_non_editor_cannot_edit_by_reply(self):
         update, _ = self._reply_update()
