@@ -104,8 +104,20 @@ class CompositeCache(CacheBackend):
         return await self.s3.exists(video_id)
 
     async def evict(self, video_id: str) -> None:
-        await self.disk.evict(video_id)
+        # S3 first: S3Cache.evict swallows delete failures, so confirm the copy
+        # is really gone before dropping hand-entered chapters. Those cannot be
+        # re-fetched from anywhere, and destroying them while an old copy of the
+        # audio survives in S3 turns a partial reset into a one-way loss.
         await self.s3.evict(video_id)
+        if await self.s3.exists(video_id):
+            logger.warning(
+                "CompositeCache: S3 copy of %s survived eviction — keeping "
+                "hand-entered chapters",
+                video_id,
+            )
+            await self.disk.evict(video_id, drop_manual=False)
+            return
+        await self.disk.evict(video_id)
 
     async def total_size_bytes(self) -> int:
         disk_total = await self.disk.total_size_bytes()
@@ -127,6 +139,10 @@ class CompositeCache(CacheBackend):
         self, video_id: str, chapters: tuple[tuple[int, str], ...]
     ) -> None:
         await self.disk.store_chapters(video_id, chapters)
+
+    async def find_by_file_id(self, file_id: str) -> str | None:
+        """Delegate to disk cache (file_ids are local to this bot instance)."""
+        return await self.disk.find_by_file_id(file_id)
 
     async def get_manual_chapters(
         self, video_id: str

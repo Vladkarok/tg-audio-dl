@@ -167,7 +167,13 @@ class DiskCache(CacheBackend):
         validate_video_id(video_id)
         return self._locate_audio(video_id) is not None
 
-    async def evict(self, video_id: str) -> None:
+    async def evict(self, video_id: str, *, drop_manual: bool = True) -> None:
+        """Remove the audio and its sidecars.
+
+        *drop_manual* is False when the caller could not confirm the audio is
+        gone everywhere (see CompositeCache.evict) — hand-entered chapters are
+        irreplaceable, so they are kept unless the reset really is clean.
+        """
         validate_video_id(video_id)
         # Remove any audio file regardless of extension
         path = self._locate_audio(video_id)
@@ -181,8 +187,9 @@ class DiskCache(CacheBackend):
         # Explicit eviction is the /redownload "clean reset" path: the upstream
         # audio may be a different edit now, so hand-entered timestamps for the
         # old one must not be silently reattached to it.
-        with contextlib.suppress(FileNotFoundError):
-            self._manual_chapters_path(video_id).unlink()
+        if drop_manual:
+            with contextlib.suppress(FileNotFoundError):
+                self._manual_chapters_path(video_id).unlink()
 
     async def get_file_id(self, video_id: str) -> str | None:
         """Return stored Telegram file_id or None if not stored."""
@@ -200,6 +207,23 @@ class DiskCache(CacheBackend):
             return
         self._ensure_cache_dir()
         self._fid_path(video_id).write_text(file_id)
+
+    async def find_by_file_id(self, file_id: str) -> str | None:
+        """Return the video_id a stored Telegram file_id belongs to, or None.
+
+        Scans the ``.fid`` sidecars. The cache holds at most a few hundred
+        entries and this runs once per /timestamps reply, so a reverse index
+        would be extra state to keep in sync for no measurable gain.
+        """
+        if not _FILE_ID_RE.fullmatch(file_id) or not self.cache_dir.exists():
+            return None
+        for path in self.cache_dir.glob("*.fid"):
+            try:
+                if path.read_text().strip() == file_id:
+                    return path.name[: -len(".fid")]
+            except OSError:
+                continue
+        return None
 
     async def get_chapters(self, video_id: str) -> tuple[tuple[int, str], ...] | None:
         """Return cached chapters from JSON sidecar, or None."""

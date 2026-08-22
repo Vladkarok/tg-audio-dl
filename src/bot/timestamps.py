@@ -38,6 +38,11 @@ _LEADING_RE = re.compile(
     rf"^[\[\(\-–—•*]*\s*{_TS}\s*[\]\)]*\s*[-–—:.|]?\s*(?P<title>.+)$"
 )
 _TRAILING_RE = re.compile(rf"^(?P<title>.+?)\s*[-–—:.|]?\s*[\[\(]*\s*{_TS}\s*[\]\)]*$")
+# Any timestamp-shaped token, used to count them per line. A line carrying two
+# is ambiguous no matter where they sit, so counting beats matching the
+# leading/trailing forms against each other.
+_TS_TOKEN_RE = re.compile(r"(?<!\d)\d{1,3}:\d{2}(?::\d{2})?(?!\d)")
+
 # A line that is nothing but a timestamp: worth its own message, since "no
 # timestamp found" would send the curator looking for the wrong problem.
 _BARE_RE = re.compile(rf"^[\[\(\-–—•*]*\s*{_TS}\s*[\]\)]*\s*[-–—:.|]?\s*$")
@@ -76,17 +81,16 @@ def _parse_line(line: str) -> Chapter:
     if _BARE_RE.match(line):
         raise TimestampParseError("timestamp has no title")
 
-    leading = _LEADING_RE.match(line)
-    trailing = _TRAILING_RE.match(line)
-
-    # A line matching both forms is genuinely ambiguous ("1:00 track at 2:00"):
-    # guessing would silently file the entry under the wrong start time.
-    if leading is not None and trailing is not None:
+    # More than one timestamp on a line is ambiguous ("1:00 track sampled at
+    # 2:00", "Song 1:00 remix 2:00"): guessing would silently file the entry
+    # under the wrong start time, and one wrong start shifts nothing else, so
+    # it is easy to miss in the rendered list.
+    if len(_TS_TOKEN_RE.findall(line)) > 1:
         raise TimestampParseError(
             "two timestamps on one line — keep one, at the start or the end"
         )
 
-    match = leading or trailing
+    match = _LEADING_RE.match(line) or _TRAILING_RE.match(line)
     if match is None:
         raise TimestampParseError("no timestamp found")
 

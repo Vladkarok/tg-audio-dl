@@ -702,3 +702,27 @@ class TestManualChapters:
         await cache.evict("AAAAAAAAAAA")
 
         assert await cache.get_manual_chapters("AAAAAAAAAAA") is None
+
+
+class TestFindByFileId:
+    async def test_finds_the_video_id_that_owns_a_file_id(self, tmp_path: Path) -> None:
+        cache = DiskCache(tmp_path, max_size_bytes=10**9)
+        await cache.store_file_id("AAAAAAAAAAA", "FILEID_A")
+        await cache.store_file_id("BBBBBBBBBBB", "FILEID_B")
+
+        assert await cache.find_by_file_id("FILEID_B") == "BBBBBBBBBBB"
+
+    async def test_unknown_file_id_returns_none(self, tmp_path: Path) -> None:
+        cache = DiskCache(tmp_path, max_size_bytes=10**9)
+        await cache.store_file_id("AAAAAAAAAAA", "FILEID_A")
+        assert await cache.find_by_file_id("SOMETHING_ELSE") is None
+
+    async def test_malformed_file_id_is_rejected_without_scanning(
+        self, tmp_path: Path
+    ) -> None:
+        cache = DiskCache(tmp_path, max_size_bytes=10**9)
+        assert await cache.find_by_file_id("../../etc/passwd") is None
+
+    async def test_missing_cache_dir_is_safe(self, tmp_path: Path) -> None:
+        cache = DiskCache(tmp_path / "nope", max_size_bytes=10**9)
+        assert await cache.find_by_file_id("FILEID_A") is None

@@ -56,6 +56,14 @@ class CacheBackend(ABC):
     ) -> None:
         """Persist chapters for a video_id. Default: no-op."""
 
+    async def find_by_file_id(self, file_id: str) -> str | None:
+        """Return the video_id a stored Telegram file_id belongs to.
+
+        Lets a reply to an audio message the bot already sent be traced back to
+        its cache key. Default: no reverse lookup available.
+        """
+        return None
+
     async def get_manual_chapters(
         self, video_id: str
     ) -> tuple[tuple[int, str], ...] | None:

@@ -11,7 +11,7 @@ A self-hosted Telegram bot that downloads audio from YouTube and SoundCloud and 
 - **Native M4A** — no re-encoding, embedded thumbnail and metadata
 - **Hardened Docker** — rootless (UID 10001), `cap_drop: ALL`, read-only filesystem, resource limits
 - **Access control** — user allowlist + per-user rate limiting
-- **Hand-entered chapters** — `/timestamps` applies a pasted timestamp list to tracks the uploader never timestamped
+- **Hand-entered chapters** — `/timestamps` applies a pasted timestamp list to tracks the uploader never timestamped, by URL or by replying to an audio message already in the chat
 
 ## Quick start
 

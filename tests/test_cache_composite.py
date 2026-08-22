@@ -256,3 +256,37 @@ class TestCompositeCacheFileId:
 
         await cache.store_file_id("dQw4w9WgXcQ", "AgACtest_id")
         disk.store_file_id.assert_called_once_with("dQw4w9WgXcQ", "AgACtest_id")
+
+
+class TestCompositeManualChapterEviction:
+    """Hand-entered chapters are irreplaceable, so a partial reset keeps them."""
+
+    @staticmethod
+    def _composite(tmp_path: Path):
+        from src.cache import CompositeCache
+        from src.cache.disk import DiskCache
+
+        disk = DiskCache(tmp_path / "disk", max_size_bytes=10**9)
+        s3 = MagicMock()
+        s3.evict = AsyncMock()
+        return CompositeCache(disk=disk, s3=s3), disk, s3
+
+    async def test_clean_eviction_drops_them(self, tmp_path: Path) -> None:
+        cache, disk, s3 = self._composite(tmp_path)
+        s3.exists = AsyncMock(return_value=False)
+        await disk.store_manual_chapters("AAAAAAAAAAA", ((0, "Intro"),))
+
+        await cache.evict("AAAAAAAAAAA")
+
+        assert await disk.get_manual_chapters("AAAAAAAAAAA") is None
+
+    async def test_surviving_s3_copy_keeps_them(self, tmp_path: Path) -> None:
+        """S3Cache.evict swallows failures, so a surviving object is the signal
+        that the reset was not clean."""
+        cache, disk, s3 = self._composite(tmp_path)
+        s3.exists = AsyncMock(return_value=True)
+        await disk.store_manual_chapters("AAAAAAAAAAA", ((0, "Intro"),))
+
+        await cache.evict("AAAAAAAAAAA")
+
+        assert await disk.get_manual_chapters("AAAAAAAAAAA") == ((0, "Intro"),)

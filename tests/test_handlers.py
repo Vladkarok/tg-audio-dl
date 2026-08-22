@@ -55,6 +55,7 @@ def make_download_result(video_id="dQw4w9WgXcQ", title="Test Song"):
 def make_update(user_id=12345, text="https://youtu.be/dQw4w9WgXcQ"):
     update = MagicMock()
     update.message = MagicMock()
+    update.message.reply_to_message = None
     update.message.text = text
     update.message.chat_id = 999
     update.message.message_id = 1
@@ -2122,6 +2123,7 @@ _EDITOR_ID = 4242
 
 def make_timestamps_context(cached=True, duration=7200):
     context = make_context()
+    context.bot_data["cache"].find_by_file_id = AsyncMock(return_value=None)
     context.bot_data["settings"].TIMESTAMP_EDITOR_IDS = [_EDITOR_ID]
     context.bot_data["cache"].exists = AsyncMock(return_value=cached)
     context.bot_data["cache"].get_file_id = AsyncMock(return_value="FILEID")
@@ -2328,3 +2330,128 @@ class TestManualChaptersPrecedence:
 
         result = await handlers_module._effective_chapters(cache, "dQw4w9WgXcQ")
         assert result == ((0, "Upstream"),)
+
+
+class TestTimestampsByReply:
+    """Replying to an audio message the bot already sent, with no URL."""
+
+    @staticmethod
+    def _reply_update(body=_TS_BODY, file_id="FILEID", duration=7200, title="Long Mix"):
+        update = make_update(user_id=_EDITOR_ID, text=f"/timestamps\n{body}")
+        replied = MagicMock()
+        replied.chat_id = 999
+        replied.message_id = 55
+        replied.caption = "🎵 Long Mix"
+        replied.audio = MagicMock()
+        replied.audio.file_id = file_id
+        replied.audio.duration = duration
+        replied.audio.title = title
+        update.message.reply_to_message = replied
+        return update, replied
+
+    async def test_chapters_are_added_to_the_existing_message(self):
+        update, replied = self._reply_update()
+        context = make_timestamps_context()
+        context.bot_data["cache"].find_by_file_id = AsyncMock(
+            return_value="dQw4w9WgXcQ"
+        )
+        context.bot.edit_message_caption = AsyncMock()
+
+        await handle_timestamps(update, context)
+
+        context.bot_data["cache"].store_manual_chapters.assert_awaited_once_with(
+            "dQw4w9WgXcQ", _TS_CHAPTERS
+        )
+        # Edited in place — no new audio message, no re-upload.
+        edit = context.bot.edit_message_caption.await_args.kwargs
+        assert edit["chat_id"] == 999
+        assert edit["message_id"] == 55
+        assert "Intro" in edit["caption"]
+        context.bot.send_audio.assert_not_called()
+
+    async def test_no_url_lookup_is_needed(self):
+        """The reply carries duration and title, so yt-dlp is never called."""
+        update, _ = self._reply_update()
+        context = make_timestamps_context()
+        context.bot_data["cache"].find_by_file_id = AsyncMock(
+            return_value="dQw4w9WgXcQ"
+        )
+        context.bot.edit_message_caption = AsyncMock()
+
+        await handle_timestamps(update, context)
+
+        context.bot_data["downloader"].fetch_metadata.assert_not_called()
+
+    async def test_duration_from_the_audio_message_bounds_the_list(self):
+        update, _ = self._reply_update(body="0:00 A\n99:00 B", duration=600)
+        context = make_timestamps_context()
+        context.bot_data["cache"].find_by_file_id = AsyncMock(
+            return_value="dQw4w9WgXcQ"
+        )
+
+        await handle_timestamps(update, context)
+
+        context.bot_data["cache"].store_manual_chapters.assert_not_called()
+        assert "past the end" in update.message.reply_text.await_args.args[0]
+
+    async def test_unknown_file_id_asks_for_the_url(self):
+        update, _ = self._reply_update(file_id="STALEID")
+        context = make_timestamps_context()
+        context.bot_data["cache"].find_by_file_id = AsyncMock(return_value=None)
+
+        await handle_timestamps(update, context)
+
+        context.bot_data["cache"].store_manual_chapters.assert_not_called()
+        assert "track URL instead" in update.message.reply_text.await_args.args[0]
+
+    async def test_failed_edit_still_reports_the_save(self):
+        update, _ = self._reply_update()
+        context = make_timestamps_context()
+        context.bot_data["cache"].find_by_file_id = AsyncMock(
+            return_value="dQw4w9WgXcQ"
+        )
+        context.bot.edit_message_caption = AsyncMock(side_effect=BadRequest("too old"))
+
+        await handle_timestamps(update, context)
+
+        context.bot_data["cache"].store_manual_chapters.assert_awaited_once()
+        assert "could not be edited" in update.message.reply_text.await_args.args[0]
+
+    async def test_clear_works_by_reply(self):
+        update, _ = self._reply_update()
+        update.message.text = "/timestamps clear"
+        context = make_timestamps_context()
+        context.bot_data["cache"].find_by_file_id = AsyncMock(
+            return_value="dQw4w9WgXcQ"
+        )
+        context.bot_data["cache"].delete_manual_chapters = AsyncMock(return_value=True)
+
+        await handle_timestamps(update, context)
+
+        context.bot_data["cache"].delete_manual_chapters.assert_awaited_once_with(
+            "dQw4w9WgXcQ"
+        )
+
+    async def test_non_editor_cannot_edit_by_reply(self):
+        update, _ = self._reply_update()
+        update.effective_user.id = 999
+        context = make_timestamps_context()
+        context.bot_data["cache"].find_by_file_id = AsyncMock(
+            return_value="dQw4w9WgXcQ"
+        )
+        context.bot.edit_message_caption = AsyncMock()
+
+        await handle_timestamps(update, context)
+
+        context.bot_data["cache"].store_manual_chapters.assert_not_called()
+        context.bot.edit_message_caption.assert_not_called()
+
+    async def test_reply_to_a_non_audio_message_shows_usage(self):
+        update, replied = self._reply_update()
+        replied.audio = None
+        context = make_timestamps_context()
+
+        await handle_timestamps(update, context)
+
+        context.bot_data["cache"].store_manual_chapters.assert_not_called()
+        assert "Usage:" in update.message.reply_text.await_args.args[0]
