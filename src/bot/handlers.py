@@ -1351,6 +1351,15 @@ async def _process_url_locked(
         await progress.set_step(Step.DOWNLOADING, StepStatus.ACTIVE, initial_detail)
 
         async def on_progress(dp: DownloadProgress) -> None:
+            if dp.status == "retrying":
+                # A silent 30-second gap reads as a hang; say what is happening.
+                wait = dp.eta_seconds or 0
+                await progress.set_step(
+                    Step.DOWNLOADING,
+                    StepStatus.ACTIVE,
+                    f"YouTube refused the download, retrying in {wait}s…",
+                )
+                return
             await progress.set_downloading_progress(dp.percentage)
 
         handled_ids: set[str] = set()

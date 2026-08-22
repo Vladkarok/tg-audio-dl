@@ -1726,6 +1726,31 @@ class TestTransientRetry:
         assert len(captured_dirs) == 3
         assert not any(p.name.startswith(".dl-") for p in tmp_path.iterdir())
 
+    async def test_retry_notifies_the_progress_callback(self, tmp_path: Path) -> None:
+        """Otherwise the wait looks like a hung download."""
+        import yt_dlp
+
+        seen: list[DownloadProgress] = []
+
+        async def on_progress(dp: DownloadProgress) -> None:
+            seen.append(dp)
+
+        downloader = AudioDownloader(download_dir=tmp_path, max_file_size_bytes=10**9)
+        errors = [yt_dlp.utils.DownloadError("ERROR: HTTP Error 403: Forbidden")]
+        captured: list[Path] = []
+
+        with patch(
+            "src.downloader.client.yt_dlp.YoutubeDL",
+            side_effect=TestTransientRetry._failing_then_writing_cls(errors, captured),
+        ):
+            await downloader.download(
+                _make_parsed_single(), progress_callback=on_progress
+            )
+
+        retries = [dp for dp in seen if dp.status == "retrying"]
+        assert len(retries) == 1
+        assert retries[0].eta_seconds is not None
+
     async def test_non_transient_error_is_not_retried(self, tmp_path: Path) -> None:
         """A deterministic failure fails fast instead of burning the budget."""
         import yt_dlp
@@ -2109,3 +2134,22 @@ class TestFetchMetadata:
             pytest.raises(VideoUnavailableError),
         ):
             await downloader.fetch_metadata(_make_parsed_single())
+
+
+class TestRetryBackoffValues:
+    """The delays are the point of the retry, so pin them here rather than
+    making every other test wait for them (see conftest.no_real_retry_delays).
+    """
+
+    def test_one_delay_per_retry(self):
+        """A short delays tuple would IndexError on the last retry."""
+        from src.downloader import client
+
+        assert len(client._RETRY_DELAYS_SECONDS) == client._DOWNLOAD_ATTEMPTS - 1
+
+    def test_delays_outlast_a_brief_block(self):
+        """Production hit three 403s inside 11s and recovered minutes later,
+        so a retry window measured in single-digit seconds buys nothing."""
+        from src.downloader import client
+
+        assert sum(client._RETRY_DELAYS_SECONDS) >= 30

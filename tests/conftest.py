@@ -37,6 +37,27 @@ def clear_env_vars(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def no_real_retry_delays(monkeypatch, request):
+    """Collapse the download retry backoff so no test sleeps for it.
+
+    The production delays are deliberately long (see _RETRY_DELAYS_SECONDS):
+    a transient YouTube block outlives a few seconds, so the retries have to.
+    Tests assert the retry *behaviour*; the values themselves are pinned by
+    TestRetryBackoffValues rather than by making the suite wait for them.
+    """
+    if "TestRetryBackoffValues" in request.node.nodeid:
+        return  # that class asserts the real values
+
+    from src.downloader import client as downloader_module
+
+    monkeypatch.setattr(
+        downloader_module,
+        "_RETRY_DELAYS_SECONDS",
+        (0.0,) * len(downloader_module._RETRY_DELAYS_SECONDS),
+    )
+
+
+@pytest.fixture(autouse=True)
 def patch_blocking_io_helpers(monkeypatch, request):
     """Keep tests deterministic without relying on real executor teardown.
 

@@ -232,8 +232,15 @@ _TRANSIENT_MARKERS = (
 )
 
 # Total attempts per download, and the wait before each retry.
+#
+# The first values here were 2s and 5s, tuned for the stale-signature theory
+# where re-extracting immediately gets a freshly signed URL. Production said
+# otherwise: three attempts inside eleven seconds all returned 403, and the
+# same video downloaded fine minutes later. Whatever the block is, it outlives
+# an eleven-second window, so the retries have to as well. The caller is shown
+# a "retrying" state so the gap does not read as a hang.
 _DOWNLOAD_ATTEMPTS = 3
-_RETRY_DELAYS_SECONDS = (2.0, 5.0)
+_RETRY_DELAYS_SECONDS = (5.0, 30.0)
 
 
 def _is_transient_error(exc: DownloadError) -> bool:
@@ -505,6 +512,32 @@ class AudioDownloader:
     # Private helpers
     # ------------------------------------------------------------------
 
+    @staticmethod
+    async def _notify_retry(
+        progress_callback: ProgressCallback | None,
+        attempt: int,
+        delay: float,
+    ) -> None:
+        """Tell the caller a retry is pending so the wait is not silent.
+
+        Reuses the progress channel rather than adding a second callback: the
+        status field is free-form and the handler already switches on it.
+        """
+        if progress_callback is None:
+            return
+        try:
+            await progress_callback(
+                DownloadProgress(
+                    status="retrying",
+                    percentage=None,
+                    speed_bps=None,
+                    eta_seconds=int(delay),
+                    filename=None,
+                )
+            )
+        except Exception:
+            logger.warning("progress_callback raised on retry %d", attempt)
+
     async def _download_one(
         self,
         url: str,
@@ -603,6 +636,7 @@ class AudioDownloader:
                     delay,
                     exc,
                 )
+                await self._notify_retry(progress_callback, attempt, delay)
                 await asyncio.sleep(delay)
             else:
                 return info, dl_dir
