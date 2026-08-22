@@ -1357,7 +1357,7 @@ async def _process_url_locked(
                 await progress.set_step(
                     Step.DOWNLOADING,
                     StepStatus.ACTIVE,
-                    f"YouTube refused the download, retrying in {wait}s…",
+                    f"Download was refused, retrying in {wait}s…",
                 )
                 return
             await progress.set_downloading_progress(dp.percentage)

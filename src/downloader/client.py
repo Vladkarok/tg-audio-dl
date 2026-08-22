@@ -242,6 +242,14 @@ _TRANSIENT_MARKERS = (
 _DOWNLOAD_ATTEMPTS = 3
 _RETRY_DELAYS_SECONDS = (5.0, 30.0)
 
+# Playlists multiply the backoff by the track count: 50 tracks that all fail
+# would sleep 50 x 35s = 29 minutes while holding one of the concurrency
+# permits, queueing everyone else behind a playlist that is already doomed. A
+# transient failure that survives its retries is almost never track-specific —
+# the block is on us, not on that video — so once this many tracks have burned
+# their full budget, the rest of the playlist fails fast.
+_PLAYLIST_RETRY_GIVEUP = 2
+
 
 def _is_transient_error(exc: DownloadError) -> bool:
     """Return True when *exc* is worth retrying with a fresh extraction."""
@@ -546,6 +554,7 @@ class AudioDownloader:
         noplaylist: bool,
         progress_callback: ProgressCallback | None,
         loop: asyncio.AbstractEventLoop,
+        max_attempts: int = _DOWNLOAD_ATTEMPTS,
     ) -> DownloadResult:
         """Run yt-dlp for a single URL and return a DownloadResult.
 
@@ -563,6 +572,7 @@ class AudioDownloader:
             noplaylist=noplaylist,
             progress_callback=progress_callback,
             loop=loop,
+            max_attempts=max_attempts,
         )
 
         try:
@@ -580,6 +590,7 @@ class AudioDownloader:
         noplaylist: bool,
         progress_callback: ProgressCallback | None,
         loop: asyncio.AbstractEventLoop,
+        max_attempts: int = _DOWNLOAD_ATTEMPTS,
     ) -> tuple[dict[str, Any], Path]:
         """Run yt-dlp until it succeeds or a non-transient failure occurs.
 
@@ -592,7 +603,7 @@ class AudioDownloader:
         Timeouts are not retried: the caller already waited the full
         ``download_timeout``, and a second wait would double that budget.
         """
-        for attempt in range(1, _DOWNLOAD_ATTEMPTS + 1):
+        for attempt in range(1, max_attempts + 1):
             # Isolate this attempt in its own subdir, keyed by a uuid token, so
             # the flat ``{id}.{ext}`` output path is never shared with another
             # (possibly lingering) download of the same video id.
@@ -626,13 +637,13 @@ class AudioDownloader:
                 # regardless of how the failure was classified.
                 self._cleanup_partials(yt_id)
                 self._cleanup_download_dir(dl_dir)
-                if attempt == _DOWNLOAD_ATTEMPTS or not _is_transient_error(exc):
+                if attempt == max_attempts or not _is_transient_error(exc):
                     raise
                 delay = _RETRY_DELAYS_SECONDS[attempt - 1]
                 logger.warning(
                     "Transient download failure (attempt %d/%d), retrying in %.0fs: %s",
                     attempt,
-                    _DOWNLOAD_ATTEMPTS,
+                    max_attempts,
                     delay,
                     exc,
                 )
@@ -722,6 +733,9 @@ class AudioDownloader:
 
         total = len(entries)
         results: list[DownloadResult] = []
+        # Tracks that used their whole retry budget and still failed. See
+        # _PLAYLIST_RETRY_GIVEUP: past that point retrying is just sleeping.
+        exhausted = 0
 
         for idx, (track_ref, title) in enumerate(entries, start=1):
             if track_start_callback is not None:
@@ -746,6 +760,7 @@ class AudioDownloader:
                 yt_id = track_ref
                 cache_id = None
 
+            attempts = 1 if exhausted >= _PLAYLIST_RETRY_GIVEUP else _DOWNLOAD_ATTEMPTS
             try:
                 result = await self._download_one(
                     url=track_url,
@@ -754,11 +769,20 @@ class AudioDownloader:
                     noplaylist=True,
                     progress_callback=progress_callback,
                     loop=loop,
+                    max_attempts=attempts,
                 )
             except FileTooLargeError as exc:
                 logger.warning("Skipping playlist track %s: %s", track_ref, exc)
                 continue
             except DownloadError:
+                if attempts > 1:
+                    exhausted += 1
+                    if exhausted == _PLAYLIST_RETRY_GIVEUP:
+                        logger.warning(
+                            "%d playlist tracks exhausted their retries; "
+                            "remaining tracks will fail fast",
+                            exhausted,
+                        )
                 logger.warning("Skipping failed playlist track %s", track_ref)
                 continue
 

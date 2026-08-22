@@ -2149,7 +2149,61 @@ class TestRetryBackoffValues:
 
     def test_delays_outlast_a_brief_block(self):
         """Production hit three 403s inside 11s and recovered minutes later,
-        so a retry window measured in single-digit seconds buys nothing."""
+        so a retry window measured in single-digit seconds buys nothing.
+
+        Pinned exactly: a total of 30s split as (30, 0) would satisfy a sum
+        check while making the first retry useless."""
         from src.downloader import client
 
-        assert sum(client._RETRY_DELAYS_SECONDS) >= 30
+        assert client._RETRY_DELAYS_SECONDS == (5.0, 30.0)
+
+
+class TestPlaylistRetryBudget:
+    """Retrying every track of a doomed playlist just holds a permit and sleeps."""
+
+    @staticmethod
+    def _always_403_cls(attempt_log: list[str]):
+        import yt_dlp
+
+        def factory(opts):
+            out_dir = Path(opts["outtmpl"]).parent
+            attempt_log.append(out_dir.name)
+            mock_ydl = MagicMock()
+            mock_ydl.__enter__ = MagicMock(return_value=mock_ydl)
+            mock_ydl.__exit__ = MagicMock(return_value=False)
+            mock_ydl.extract_info.side_effect = yt_dlp.utils.DownloadError(
+                "ERROR: unable to download video data: HTTP Error 403: Forbidden"
+            )
+            return mock_ydl
+
+        return factory
+
+    async def test_later_tracks_stop_retrying(self, tmp_path: Path) -> None:
+        from src.downloader.client import (
+            _DOWNLOAD_ATTEMPTS,
+            _PLAYLIST_RETRY_GIVEUP,
+        )
+
+        downloader = AudioDownloader(download_dir=tmp_path, max_file_size_bytes=10**9)
+        attempts: list[str] = []
+        entries = [(f"vid{i:07d}", f"Track {i}") for i in range(6)]
+
+        with (
+            patch.object(
+                AudioDownloader, "_fetch_playlist_metadata", return_value=entries
+            ),
+            patch(
+                "src.downloader.client.yt_dlp.YoutubeDL",
+                side_effect=self._always_403_cls(attempts),
+            ),
+            pytest.raises(DownloadError, match="unavailable or failed"),
+        ):
+            await downloader.download(_make_parsed_playlist())
+
+        # The first tracks burn the full budget; the rest get one attempt each.
+        expected = _PLAYLIST_RETRY_GIVEUP * _DOWNLOAD_ATTEMPTS + (
+            len(entries) - _PLAYLIST_RETRY_GIVEUP
+        )
+        assert len(attempts) == expected
+        # Without the budget every track would have retried.
+        assert len(attempts) < len(entries) * _DOWNLOAD_ATTEMPTS
