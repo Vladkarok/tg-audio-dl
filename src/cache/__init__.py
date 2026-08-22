@@ -128,6 +128,19 @@ class CompositeCache(CacheBackend):
     ) -> None:
         await self.disk.store_chapters(video_id, chapters)
 
+    async def get_manual_chapters(
+        self, video_id: str
+    ) -> tuple[tuple[int, str], ...] | None:
+        return await self.disk.get_manual_chapters(video_id)
+
+    async def store_manual_chapters(
+        self, video_id: str, chapters: tuple[tuple[int, str], ...]
+    ) -> None:
+        await self.disk.store_manual_chapters(video_id, chapters)
+
+    async def delete_manual_chapters(self, video_id: str) -> bool:
+        return await self.disk.delete_manual_chapters(video_id)
+
 
 # ---------------------------------------------------------------------------
 # Factory

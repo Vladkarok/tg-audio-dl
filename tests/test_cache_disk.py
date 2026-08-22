@@ -606,3 +606,99 @@ class TestPutRemovesStaleExtension:
 
         # File should exist (overwritten, not deleted)
         assert (cache_dir / f"{vid}.m4a").exists()
+
+
+# ---------------------------------------------------------------------------
+# Manual (hand-entered) chapters sidecar
+# ---------------------------------------------------------------------------
+
+
+class TestManualChapters:
+    _CHAPTERS = ((0, "Intro"), (225, "Second"))
+
+    async def test_round_trip(self, tmp_path: Path) -> None:
+        cache = DiskCache(tmp_path, max_size_bytes=10**9)
+        await cache.store_manual_chapters("AAAAAAAAAAA", self._CHAPTERS)
+        assert await cache.get_manual_chapters("AAAAAAAAAAA") == self._CHAPTERS
+
+    async def test_missing_returns_none(self, tmp_path: Path) -> None:
+        cache = DiskCache(tmp_path, max_size_bytes=10**9)
+        assert await cache.get_manual_chapters("AAAAAAAAAAA") is None
+
+    async def test_stored_separately_from_upstream_chapters(
+        self, tmp_path: Path
+    ) -> None:
+        """The two sets must never overwrite each other."""
+        cache = DiskCache(tmp_path, max_size_bytes=10**9)
+        await cache.store_chapters("AAAAAAAAAAA", ((0, "Upstream"),))
+        await cache.store_manual_chapters("AAAAAAAAAAA", self._CHAPTERS)
+
+        assert await cache.get_chapters("AAAAAAAAAAA") == ((0, "Upstream"),)
+        assert await cache.get_manual_chapters("AAAAAAAAAAA") == self._CHAPTERS
+
+    async def test_store_replaces_previous_set(self, tmp_path: Path) -> None:
+        cache = DiskCache(tmp_path, max_size_bytes=10**9)
+        await cache.store_manual_chapters("AAAAAAAAAAA", self._CHAPTERS)
+        await cache.store_manual_chapters("AAAAAAAAAAA", ((0, "Only one"),))
+        assert await cache.get_manual_chapters("AAAAAAAAAAA") == ((0, "Only one"),)
+
+    async def test_delete_reports_whether_anything_was_stored(
+        self, tmp_path: Path
+    ) -> None:
+        cache = DiskCache(tmp_path, max_size_bytes=10**9)
+        assert await cache.delete_manual_chapters("AAAAAAAAAAA") is False
+        await cache.store_manual_chapters("AAAAAAAAAAA", self._CHAPTERS)
+        assert await cache.delete_manual_chapters("AAAAAAAAAAA") is True
+        assert await cache.get_manual_chapters("AAAAAAAAAAA") is None
+
+    async def test_truncated_file_reads_as_none(self, tmp_path: Path) -> None:
+        cache = DiskCache(tmp_path, max_size_bytes=10**9)
+        (tmp_path / "AAAAAAAAAAA.chapters.manual.json").write_text('{"chapters": [[0,')
+        assert await cache.get_manual_chapters("AAAAAAAAAAA") is None
+
+    async def test_write_is_atomic(self, tmp_path: Path) -> None:
+        """A failed write must not leave a half-written sidecar behind."""
+        cache = DiskCache(tmp_path, max_size_bytes=10**9)
+        await cache.store_manual_chapters("AAAAAAAAAAA", self._CHAPTERS)
+
+        with (
+            patch("src.cache.disk.os.replace", side_effect=OSError("no space")),
+            pytest.raises(OSError),
+        ):
+            await cache.store_manual_chapters("AAAAAAAAAAA", ((0, "Replacement"),))
+
+        # Previous content intact, no temp files left over.
+        assert await cache.get_manual_chapters("AAAAAAAAAAA") == self._CHAPTERS
+        assert not list(tmp_path.glob("*.tmp"))
+
+    async def test_survives_lru_eviction_of_the_audio(self, tmp_path: Path) -> None:
+        """Upstream chapters can be re-fetched; hand-entered ones cannot, so they
+        outlive the audio and are reused when it is downloaded again."""
+        cache_dir = tmp_path / "lru"
+        cache = DiskCache(cache_dir=cache_dir, max_size_bytes=250)
+
+        for vid in ("AAAAAAAAAAA", "BBBBBBBBBBB", "CCCCCCCCCCC"):
+            src = tmp_path / f"{vid}.m4a"
+            src.write_bytes(b"X" * 100)
+            await cache.put(vid, src)
+            await cache.store_chapters(vid, ((0, "Upstream"),))
+            await cache.store_manual_chapters(vid, self._CHAPTERS)
+            await asyncio.sleep(0.01)
+
+        # The first file was evicted to stay under the limit.
+        assert await cache.get("AAAAAAAAAAA") is None
+        assert await cache.get_chapters("AAAAAAAAAAA") is None
+        assert await cache.get_manual_chapters("AAAAAAAAAAA") == self._CHAPTERS
+
+    async def test_explicit_evict_removes_them(self, tmp_path: Path) -> None:
+        """/redownload is a clean reset: the upstream audio may be a different
+        edit now, so old hand-entered timestamps must not carry over."""
+        cache = DiskCache(tmp_path, max_size_bytes=10**9)
+        src = tmp_path / "src.m4a"
+        src.write_bytes(b"X" * 10)
+        await cache.put("AAAAAAAAAAA", src)
+        await cache.store_manual_chapters("AAAAAAAAAAA", self._CHAPTERS)
+
+        await cache.evict("AAAAAAAAAAA")
+
+        assert await cache.get_manual_chapters("AAAAAAAAAAA") is None

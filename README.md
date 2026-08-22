@@ -11,6 +11,7 @@ A self-hosted Telegram bot that downloads audio from YouTube and SoundCloud and 
 - **Native M4A** — no re-encoding, embedded thumbnail and metadata
 - **Hardened Docker** — rootless (UID 10001), `cap_drop: ALL`, read-only filesystem, resource limits
 - **Access control** — user allowlist + per-user rate limiting
+- **Hand-entered chapters** — `/timestamps` applies a pasted timestamp list to tracks the uploader never timestamped
 
 ## Quick start
 
@@ -42,6 +43,7 @@ git tag v1.2.3 && git push origin v1.2.3
 | `CACHE_MAX_SIZE_GB` | `5.0` | Max disk cache size |
 | `MAX_FILE_SIZE_MB` | `2000` | Max file size to send |
 | `ALLOWED_USER_IDS` | `[]` | Allowlist (empty = public); comma-separated or JSON array |
+| `TIMESTAMP_EDITOR_IDS` | `[]` | Who may set chapter timestamps by hand with `/timestamps`. Fail-closed: empty = nobody |
 | `RATE_LIMIT_PER_MINUTE` | `5` | Requests per user per minute |
 | `PLAYLIST_MAX_TRACKS` | `50` | Max tracks from a playlist |
 | `CHAPTER_PAGES_ENABLED` | `true` | Render overflowing chapter lists as paginated pages with inline nav buttons (and enable `/chapters`). Set `false` for the legacy multi-message chapter index |

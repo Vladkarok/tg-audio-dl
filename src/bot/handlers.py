@@ -39,6 +39,7 @@ from src.bot.captions import (
 )
 from src.bot.media import _extract_audio_metadata, _extract_thumbnail
 from src.bot.progress import ProgressManager, Step, StepStatus
+from src.bot.timestamps import TimestampParseError, parse_timestamps
 from src.cache.base import CacheBackend
 from src.config import Settings
 from src.downloader.client import (
@@ -155,6 +156,8 @@ _HELP_TEXT = (
     "from scratch.\n"
     "• /chapters <URL> — browse a cached track's chapters as paginated "
     "captions with navigation buttons.\n"
+    "• /timestamps <URL> — followed by a pasted timestamp list, sets the "
+    "chapters yourself when the uploader never published any.\n"
 )
 
 
@@ -359,6 +362,326 @@ async def handle_redownload(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
 
 # ---------------------------------------------------------------------------
+# /timestamps command — hand-entered chapters for tracks the author never
+# timestamped (the list usually lives in a comment).
+# ---------------------------------------------------------------------------
+
+
+_TIMESTAMPS_USAGE = (
+    "Usage: /timestamps <URL>\n"
+    "0:00 First track\n"
+    "3:45 Second track\n"
+    "1:02:10 Closer\n\n"
+    "Paste the timestamp list on the lines after the URL. "
+    "Send /timestamps <URL> clear to remove them and go back to the "
+    "chapters the uploader published (if any)."
+)
+
+
+def _is_timestamp_editor(user_id: int, settings: Settings) -> bool:
+    """Return True if *user_id* may write manual chapters.
+
+    Fail-closed, unlike :func:`_is_user_allowed`: manual chapters are stored
+    per video_id and shown to everyone who requests that track, so an empty
+    TIMESTAMP_EDITOR_IDS means nobody can edit rather than everybody.
+    """
+    return user_id in settings.TIMESTAMP_EDITOR_IDS
+
+
+async def handle_timestamps(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Store hand-entered chapters for a track and resend it with them applied.
+
+    The whole list arrives in one message: the command and URL on the first
+    line, the pasted timestamps on the lines below. Storing replaces any
+    previous set — there is no append or edit-by-index, so what the curator
+    sees in the message is exactly what is stored.
+    """
+    if update.effective_user is None or update.message is None:
+        return
+
+    settings: Settings = context.bot_data["settings"]
+    user_id: int = update.effective_user.id
+    text: str = update.message.text or ""
+
+    if not _is_user_allowed(user_id, settings):
+        logger.warning("Rejected user %d (not in ALLOWED_USER_IDS)", user_id)
+        return
+
+    if not _is_timestamp_editor(user_id, settings):
+        logger.warning("Rejected /timestamps from non-editor user %d", user_id)
+        await update.message.reply_text(
+            "You are not allowed to edit timestamps for this bot."
+        )
+        return
+
+    first_line, _, body = text.partition("\n")
+
+    parsed_urls = extract_media_urls(first_line)
+    if not parsed_urls:
+        await update.message.reply_text(_TIMESTAMPS_USAGE)
+        return
+
+    parsed_url = parsed_urls[0]
+
+    # Manual chapters are keyed by the cache key, so the URL must resolve to a
+    # concrete one. Playlists have no single key; on.soundcloud.com short URLs
+    # only get theirs after a download resolves the slug, and storing under a
+    # guess would file the list where nothing looks for it.
+    if parsed_url.url_type == URLType.PLAYLIST:
+        await update.message.reply_text(
+            "/timestamps supports single tracks only (not playlists)."
+        )
+        return
+    video_id = parsed_url.video_id
+    if not video_id:
+        await update.message.reply_text(
+            "Please use the full track URL — this short link has no cache key "
+            "until it is resolved."
+        )
+        return
+
+    if not await _consume_rate_limit(user_id, settings):
+        await update.message.reply_text(
+            "You have reached the rate limit. Please wait a minute."
+        )
+        return
+
+    cache: CacheBackend = context.bot_data["cache"]
+    downloader: AudioDownloader = context.bot_data["downloader"]
+
+    # --- Clear mode -------------------------------------------------------
+    if body.strip() == "" and first_line.strip().lower().endswith(" clear"):
+        async with _media_download_lock(video_id):
+            removed = await cache.delete_manual_chapters(video_id)
+        await update.message.reply_text(
+            "Removed your timestamps for this track."
+            if removed
+            else "No hand-entered timestamps were stored for this track."
+        )
+        return
+
+    if body.strip() == "":
+        await update.message.reply_text(_TIMESTAMPS_USAGE)
+        return
+
+    # --- Parse ------------------------------------------------------------
+    # Duration bounds the timestamps, but a metadata fetch can fail for
+    # reasons that have nothing to do with the pasted list, so treat it as
+    # best-effort and parse without the bound if it is unavailable.
+    duration: int | None = None
+    display_title: str | None = None
+    try:
+        metadata = await downloader.fetch_metadata(parsed_url)
+    except (VideoUnavailableError, DownloadError):
+        logger.info(
+            "Could not fetch metadata for /timestamps on %s", video_id, exc_info=True
+        )
+    else:
+        duration = metadata.duration_seconds
+        display_title = clean_title(metadata.title) or None
+
+    try:
+        chapters = parse_timestamps(body, duration_seconds=duration)
+    except TimestampParseError as exc:
+        await update.message.reply_text(f"❌ {exc}")
+        return
+
+    # --- Store ------------------------------------------------------------
+    # Held across the store so a concurrent /redownload of the same track
+    # cannot evict between the write and the resend below.
+    async with _media_download_lock(video_id):
+        try:
+            await cache.store_manual_chapters(video_id, chapters)
+        except Exception:
+            logger.exception("Failed to store manual chapters for %s", video_id)
+            await update.message.reply_text(
+                "❌ Could not save the timestamps. Please try again."
+            )
+            return
+
+        cached = await cache.exists(video_id)
+
+    if not cached:
+        await update.message.reply_text(
+            f"✅ Saved {len(chapters)} timestamps. Send the link to download the "
+            "track and they will be applied."
+        )
+        return
+
+    # --- Resend the cached track with the new chapters --------------------
+    progress = ProgressManager(
+        context.bot,
+        chat_id=update.message.chat_id,
+        reply_to_message_id=update.message.message_id,
+    )
+    await progress.create()
+    try:
+        await progress.set_step(Step.DOWNLOADING, StepStatus.DONE, "Found in cache")
+        await progress.set_step(Step.PROCESSING, StepStatus.DONE, "Timestamps saved")
+        if display_title is None:
+            cached_path = await cache.get(video_id)
+            if cached_path is not None:
+                cached_title, _ = _extract_audio_metadata(cached_path)
+                display_title = _usable_track_title(cached_title, video_id)
+        await _resend_cached_audio(
+            update,
+            context,
+            progress,
+            parsed_url=parsed_url,
+            video_id=video_id,
+            display_title=display_title or video_id,
+            chapters=chapters,
+        )
+    except Exception:
+        logger.exception("Unexpected error in handle_timestamps for user %d", user_id)
+        with contextlib.suppress(Exception):
+            await progress.set_step(
+                Step.UPLOADING, StepStatus.ERROR, "An unexpected error occurred"
+            )
+
+
+# ---------------------------------------------------------------------------
+# Chapter resolution + cached-audio resend, shared by /refresh and /timestamps
+# ---------------------------------------------------------------------------
+
+
+async def _effective_chapters(
+    cache: CacheBackend,
+    video_id: str,
+    upstream: tuple[tuple[int, str], ...] | None = None,
+) -> tuple[tuple[int, str], ...] | None:
+    """Return the chapters to display for *video_id*.
+
+    Hand-entered chapters (/timestamps) win over whatever yt-dlp reported,
+    including when the stored override is empty — that is a deliberate "this
+    track has no chapters", not an absent value.
+
+    *upstream* is the already-known yt-dlp chapter set; when omitted it is read
+    from the cache. Callers that need to compare upstream against upstream
+    (/refresh) must read ``cache.get_chapters`` directly instead of this.
+    """
+    try:
+        manual = await cache.get_manual_chapters(video_id)
+    except Exception:
+        logger.warning("Failed to read manual chapters for %s", video_id, exc_info=True)
+        manual = None
+
+    if manual is not None:
+        return manual or None
+    if upstream is not None:
+        return upstream
+    return await cache.get_chapters(video_id)
+
+
+async def _resend_cached_audio(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    progress: ProgressManager,
+    *,
+    parsed_url: ParsedURL,
+    video_id: str,
+    display_title: str,
+    chapters: tuple[tuple[int, str], ...] | None,
+) -> None:
+    """Resend already-cached audio with a freshly built caption.
+
+    Prefers the stored Telegram file_id, falls back to re-uploading the cached
+    file, and falls through to a fresh download if the cache entry turns out to
+    be gone. Drives *progress* to completion.
+    """
+    if update.message is None:
+        return
+
+    settings: Settings = context.bot_data["settings"]
+    cache: CacheBackend = context.bot_data["cache"]
+    paginate = settings.CHAPTER_PAGES_ENABLED
+    audio_message = _build_audio_message(
+        display_title, chapters, video_id, paginate=paginate
+    )
+
+    # --- Fast path: resend via Telegram file_id ---------------------------
+    file_id = await cache.get_file_id(video_id)
+    sent_msg: Message | None = None
+    if file_id:
+        try:
+            await progress.set_step(Step.UPLOADING, StepStatus.ACTIVE)
+            await progress.start_upload_animation()
+            sent_msg = await context.bot.send_audio(
+                chat_id=update.message.chat_id,
+                audio=file_id,
+                caption=audio_message.caption,
+                reply_markup=audio_message.reply_markup,
+                read_timeout=300,
+                write_timeout=300,
+            )
+        except Exception:
+            logger.warning(
+                "file_id resend failed for %s, falling back to upload",
+                video_id,
+            )
+            sent_msg = None
+
+    # --- Fallback: re-upload from cached file -----------------------------
+    if sent_msg is None:
+        cached_path: Path | None = await cache.get(video_id)
+        if cached_path is None:
+            # Stale cache: exists() said yes but the file is gone
+            # (S3 eviction, race, etc.). Recover by downloading fresh
+            # instead of surfacing an error — matches _process_url's
+            # behavior in the same state.
+            logger.warning(
+                "Resend: cache.exists()=True but cache.get()=None for %s — "
+                "falling through to fresh download",
+                video_id,
+            )
+            # Reset any in-flight upload animation/state from the failed
+            # file_id attempt so _process_url starts with a clean slate
+            # (otherwise the UI shows upload-active while download runs).
+            await progress.stop_upload_animation()
+            await progress.set_step(Step.PROCESSING, StepStatus.PENDING)
+            await progress.set_step(Step.UPLOADING, StepStatus.PENDING)
+            await _process_url(
+                update, context, progress, parsed_url, force_redownload=True
+            )
+            return
+        cached_title, cached_artist = _extract_audio_metadata(cached_path)
+        result = DownloadResult(
+            file_path=cached_path,
+            video_id=video_id,
+            title=display_title or cached_title or video_id,
+            artist=cached_artist,
+            duration_seconds=None,
+            thumbnail_url=None,
+            file_size_bytes=cached_path.stat().st_size,
+            chapters=chapters,
+        )
+        sent_msg = await _send_audio(
+            context.bot, update.message.chat_id, result, progress, paginate=paginate
+        )
+        if sent_msg.audio:
+            try:
+                await cache.store_file_id(video_id, sent_msg.audio.file_id)
+            except Exception:
+                logger.warning(
+                    "Failed to store file_id for %s after resend",
+                    video_id,
+                    exc_info=True,
+                )
+    elif audio_message.index_messages:
+        # file_id path succeeded — chapter index reply still needed if overflow
+        await _send_chapter_index(
+            context.bot,
+            update.message.chat_id,
+            sent_msg.message_id,
+            audio_message.index_messages,
+        )
+
+    await progress.set_step(Step.UPLOADING, StepStatus.DONE)
+    await asyncio.sleep(2)
+    await progress.delete()
+
+
+# ---------------------------------------------------------------------------
 # /refresh command — re-fetch chapters/metadata for a cached track, resend
 # ---------------------------------------------------------------------------
 
@@ -474,92 +797,18 @@ async def handle_refresh(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await progress.set_step(Step.PROCESSING, StepStatus.DONE)
 
         display_title = clean_title(metadata.title) or video_id
-        paginate = settings.CHAPTER_PAGES_ENABLED
-        audio_message = _build_audio_message(
-            display_title, final_chapters, video_id, paginate=paginate
+        # Upstream chapters were refreshed above, but a hand-entered set still
+        # wins for display — /refresh must not undo /timestamps.
+        display_chapters = await _effective_chapters(cache, video_id, final_chapters)
+        await _resend_cached_audio(
+            update,
+            context,
+            progress,
+            parsed_url=parsed_url,
+            video_id=video_id,
+            display_title=display_title,
+            chapters=display_chapters,
         )
-
-        # --- Fast path: resend via Telegram file_id -----------------------
-        file_id = await cache.get_file_id(video_id)
-        sent_msg: Message | None = None
-        if file_id:
-            try:
-                await progress.set_step(Step.UPLOADING, StepStatus.ACTIVE)
-                await progress.start_upload_animation()
-                sent_msg = await context.bot.send_audio(
-                    chat_id=update.message.chat_id,
-                    audio=file_id,
-                    caption=audio_message.caption,
-                    reply_markup=audio_message.reply_markup,
-                    read_timeout=300,
-                    write_timeout=300,
-                )
-            except Exception:
-                logger.warning(
-                    "file_id resend failed for %s, falling back to upload",
-                    video_id,
-                )
-                sent_msg = None
-
-        # --- Fallback: re-upload from cached file -------------------------
-        if sent_msg is None:
-            cached_path: Path | None = await cache.get(video_id)
-            if cached_path is None:
-                # Stale cache: exists() said yes but the file is gone
-                # (S3 eviction, race, etc.). Recover by downloading fresh
-                # instead of surfacing an error — matches _process_url's
-                # behavior in the same state.
-                logger.warning(
-                    "Refresh: cache.exists()=True but cache.get()=None for %s — "
-                    "falling through to fresh download",
-                    video_id,
-                )
-                # Reset any in-flight upload animation/state from the failed
-                # file_id attempt so _process_url starts with a clean slate
-                # (otherwise the UI shows upload-active while download runs).
-                await progress.stop_upload_animation()
-                await progress.set_step(Step.PROCESSING, StepStatus.PENDING)
-                await progress.set_step(Step.UPLOADING, StepStatus.PENDING)
-                await _process_url(
-                    update, context, progress, parsed_url, force_redownload=True
-                )
-                return
-            cached_title, cached_artist = _extract_audio_metadata(cached_path)
-            result = DownloadResult(
-                file_path=cached_path,
-                video_id=video_id,
-                title=display_title or cached_title or video_id,
-                artist=cached_artist,
-                duration_seconds=None,
-                thumbnail_url=None,
-                file_size_bytes=cached_path.stat().st_size,
-                chapters=final_chapters,
-            )
-            sent_msg = await _send_audio(
-                context.bot, update.message.chat_id, result, progress, paginate=paginate
-            )
-            if sent_msg.audio:
-                try:
-                    await cache.store_file_id(video_id, sent_msg.audio.file_id)
-                except Exception:
-                    logger.warning(
-                        "Failed to store refreshed file_id for %s",
-                        video_id,
-                        exc_info=True,
-                    )
-        else:
-            # file_id path succeeded — chapter index reply still needed if overflow
-            if audio_message.index_messages:
-                await _send_chapter_index(
-                    context.bot,
-                    update.message.chat_id,
-                    sent_msg.message_id,
-                    audio_message.index_messages,
-                )
-
-        await progress.set_step(Step.UPLOADING, StepStatus.DONE)
-        await asyncio.sleep(2)
-        await progress.delete()
     except Exception:
         logger.exception("Unexpected error in handle_refresh for user %d", user_id)
         with contextlib.suppress(Exception):
@@ -620,7 +869,7 @@ async def handle_chapters(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         )
         return
 
-    chapters = await cache.get_chapters(video_id)
+    chapters = await _effective_chapters(cache, video_id)
     display_title = video_id
     metadata_checked = False
     if not chapters:
@@ -763,7 +1012,7 @@ async def handle_chapter_page_callback(
         await query.answer()
 
         cache: CacheBackend = context.bot_data["cache"]
-        chapters = await cache.get_chapters(video_id)
+        chapters = await _effective_chapters(cache, video_id)
         title = (
             _extract_chapter_page_title(getattr(query.message, "caption", None))
             or video_id
@@ -870,7 +1119,7 @@ async def _process_url_locked(
                 await progress.set_step(Step.UPLOADING, StepStatus.ACTIVE)
                 await progress.start_upload_animation()
                 # Build caption with chapters for file_id resend
-                fid_chapters = await cache.get_chapters(video_id)
+                fid_chapters = await _effective_chapters(cache, video_id)
                 fid_path = await cache.get(video_id)
                 fid_title = video_id
                 if fid_path:
@@ -914,7 +1163,7 @@ async def _process_url_locked(
             logger.warning("Cache exists() but get() returned None for %s", video_id)
         else:
             cached_title, cached_artist = _extract_audio_metadata(cached_path)
-            cached_chapters = await cache.get_chapters(video_id)
+            cached_chapters = await _effective_chapters(cache, video_id)
             result = DownloadResult(
                 file_path=cached_path,
                 video_id=video_id,
@@ -1084,8 +1333,20 @@ async def _cache_and_upload_one(
                 "Failed to store chapters for %s", result.video_id, exc_info=True
             )
 
-    send_result = (
-        dataclasses.replace(result, file_path=stored_path) if stored_path else result
+    # Hand-entered chapters outlive the audio they describe (they survive LRU
+    # eviction), so a track downloaded again still shows the curated list.
+    display_chapters = await _effective_chapters(
+        cache, result.video_id, result.chapters
+    )
+    if display_chapters != result.chapters:
+        # The override lives in its own sidecar, so page callbacks can rebuild
+        # from it whether or not the upstream chapter store succeeded.
+        chapters_stored = True
+
+    send_result = dataclasses.replace(
+        result,
+        file_path=stored_path or result.file_path,
+        chapters=display_chapters,
     )
     msg = await _send_audio(
         bot, chat_id, send_result, progress, paginate=paginate and chapters_stored

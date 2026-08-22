@@ -55,3 +55,21 @@ class CacheBackend(ABC):
         self, video_id: str, chapters: tuple[tuple[int, str], ...]
     ) -> None:
         """Persist chapters for a video_id. Default: no-op."""
+
+    async def get_manual_chapters(
+        self, video_id: str
+    ) -> tuple[tuple[int, str], ...] | None:
+        """Return hand-entered chapters, or None when none are stored.
+
+        These override upstream chapters at display time. Default: not stored.
+        """
+        return None
+
+    async def store_manual_chapters(  # noqa: B027
+        self, video_id: str, chapters: tuple[tuple[int, str], ...]
+    ) -> None:
+        """Persist hand-entered chapters for a video_id. Default: no-op."""
+
+    async def delete_manual_chapters(self, video_id: str) -> bool:
+        """Remove hand-entered chapters. Default: nothing stored, so False."""
+        return False

@@ -23,8 +23,15 @@ _FILE_ID_RE = re.compile(r"^[A-Za-z0-9_\-.=]{1,512}$")
 
 # Audio extensions supported by yt-dlp output, in priority order for discovery
 _AUDIO_EXTENSIONS = (".m4a", ".opus", ".webm", ".mp3", ".ogg")
-# Sidecar suffixes that are not audio files
+# Sidecar suffixes dropped when LRU evicts the audio they belong to.
+# ``.chapters.manual.json`` is deliberately NOT here: upstream chapters can be
+# re-fetched from yt-dlp at any time, but hand-entered ones cannot be recovered
+# from anywhere, so they outlive the audio and are reused when it is downloaded
+# again. They are removed only by an explicit evict() (i.e. /redownload).
 _SIDECAR_SUFFIXES = frozenset((".fid", ".chapters.json"))
+
+# Schema version of the manual chapters sidecar envelope.
+_MANUAL_CHAPTERS_VERSION = 1
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +70,25 @@ class DiskCache(CacheBackend):
 
     def _chapters_path(self, video_id: str) -> Path:
         return self.cache_dir / f"{video_id}.chapters.json"
+
+    def _manual_chapters_path(self, video_id: str) -> Path:
+        return self.cache_dir / f"{video_id}.chapters.manual.json"
+
+    @staticmethod
+    def _atomic_write_text(path: Path, text: str) -> None:
+        """Write *text* to *path* via a temp file + rename.
+
+        A crash midway through a plain write leaves a truncated file that then
+        parses as "no chapters", silently losing data that has no other copy.
+        """
+        tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+        try:
+            tmp.write_text(text)
+            os.replace(tmp, path)
+        except Exception:
+            with contextlib.suppress(FileNotFoundError):
+                tmp.unlink()
+            raise
 
     def _ensure_cache_dir(self) -> None:
         self.cache_dir.mkdir(parents=True, exist_ok=True)
@@ -152,6 +178,11 @@ class DiskCache(CacheBackend):
             self._fid_path(video_id).unlink()
         with contextlib.suppress(FileNotFoundError):
             self._chapters_path(video_id).unlink()
+        # Explicit eviction is the /redownload "clean reset" path: the upstream
+        # audio may be a different edit now, so hand-entered timestamps for the
+        # old one must not be silently reattached to it.
+        with contextlib.suppress(FileNotFoundError):
+            self._manual_chapters_path(video_id).unlink()
 
     async def get_file_id(self, video_id: str) -> str | None:
         """Return stored Telegram file_id or None if not stored."""
@@ -191,7 +222,52 @@ class DiskCache(CacheBackend):
         validate_video_id(video_id)
         self._ensure_cache_dir()
         data = json.dumps(list(chapters))
-        self._chapters_path(video_id).write_text(data)
+        self._atomic_write_text(self._chapters_path(video_id), data)
+
+    async def get_manual_chapters(
+        self, video_id: str
+    ) -> tuple[tuple[int, str], ...] | None:
+        """Return hand-entered chapters, or None when none are stored.
+
+        An empty tuple is a valid stored value (an intentional "no chapters"
+        override) and is distinct from None.
+        """
+        validate_video_id(video_id)
+        path = self._manual_chapters_path(video_id)
+        if not path.exists():
+            return None
+        try:
+            data = json.loads(path.read_text())
+            return tuple((int(s), str(t)) for s, t in data["chapters"])
+        except Exception:
+            logger.warning(
+                "Could not read manual chapters for %s", video_id, exc_info=True
+            )
+            return None
+
+    async def store_manual_chapters(
+        self, video_id: str, chapters: tuple[tuple[int, str], ...]
+    ) -> None:
+        """Persist hand-entered chapters, replacing any previous set."""
+        validate_video_id(video_id)
+        self._ensure_cache_dir()
+        data = json.dumps(
+            {
+                "version": _MANUAL_CHAPTERS_VERSION,
+                "updated_at": int(time.time()),
+                "chapters": list(chapters),
+            }
+        )
+        self._atomic_write_text(self._manual_chapters_path(video_id), data)
+
+    async def delete_manual_chapters(self, video_id: str) -> bool:
+        """Remove hand-entered chapters. Returns True if any were stored."""
+        validate_video_id(video_id)
+        try:
+            self._manual_chapters_path(video_id).unlink()
+        except FileNotFoundError:
+            return False
+        return True
 
     async def total_size_bytes(self) -> int:
         paths = self._list_audio_files()

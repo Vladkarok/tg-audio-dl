@@ -111,6 +111,9 @@ class TrackMetadata:
     video_id: str
     title: str
     chapters: tuple[Chapter, ...] | None
+    # Used to reject hand-entered timestamps that fall past the end of the
+    # track. None when yt-dlp did not report a duration.
+    duration_seconds: int | None = None
 
 
 @dataclass(frozen=True)
@@ -411,10 +414,14 @@ class AudioDownloader:
         result_id = parsed_url.video_id or ydl_id
         title = info.get("title") or result_id
 
+        raw_duration = info.get("duration")
+        duration = int(raw_duration) if isinstance(raw_duration, (int, float)) else None
+
         return TrackMetadata(
             video_id=result_id,
             title=title,
             chapters=_parse_chapters(info),
+            duration_seconds=duration,
         )
 
     def _run_ydl_metadata(self, ydl_opts: dict[str, Any], url: str) -> dict[str, Any]:

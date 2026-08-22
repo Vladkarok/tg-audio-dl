@@ -24,6 +24,7 @@ from src.bot.handlers import (
     handle_redownload,
     handle_refresh,
     handle_start,
+    handle_timestamps,
     handle_url,
 )
 from src.cache import CompositeCache, create_cache
@@ -234,6 +235,7 @@ def build_application(settings: Settings) -> Application[Any, Any, Any, Any, Any
     app.add_handler(CommandHandler("redownload", handle_redownload))
     app.add_handler(CommandHandler("refresh", handle_refresh))
     app.add_handler(CommandHandler("chapters", handle_chapters))
+    app.add_handler(CommandHandler("timestamps", handle_timestamps))
     app.add_handler(CallbackQueryHandler(handle_chapter_page_callback, pattern=r"^cp:"))
     app.add_handler(MessageHandler(MediaURLFilter(), handle_url))
 

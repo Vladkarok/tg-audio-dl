@@ -24,6 +24,7 @@ from src.bot.handlers import (
     handle_redownload,
     handle_refresh,
     handle_start,
+    handle_timestamps,
     handle_url,
 )
 from src.downloader.client import (
@@ -79,6 +80,7 @@ def make_context(
         settings.MAX_FILE_SIZE_MB = 2000
         settings.RATE_LIMIT_PER_MINUTE = rate_limit
         settings.CHAPTER_PAGES_ENABLED = False
+        settings.TIMESTAMP_EDITOR_IDS = []
 
     if downloader is None:
         downloader = MagicMock()
@@ -93,6 +95,9 @@ def make_context(
         cache.store_file_id = AsyncMock()
         cache.get_chapters = AsyncMock(return_value=None)
         cache.store_chapters = AsyncMock()
+        cache.get_manual_chapters = AsyncMock(return_value=None)
+        cache.store_manual_chapters = AsyncMock()
+        cache.delete_manual_chapters = AsyncMock(return_value=False)
 
     context = MagicMock()
     context.bot = MagicMock()
@@ -2103,3 +2108,223 @@ class TestSendAudioChapterIndex:
 
         # send_message must have been called more than once (continued after failure)
         assert bot.send_message.call_count > 1
+
+
+# ---------------------------------------------------------------------------
+# /timestamps — hand-entered chapters
+# ---------------------------------------------------------------------------
+
+_TS_URL = "https://youtu.be/dQw4w9WgXcQ"
+_TS_BODY = "0:00 Intro\n3:45 Second\n1:02:10 Closer"
+_TS_CHAPTERS = ((0, "Intro"), (225, "Second"), (3730, "Closer"))
+_EDITOR_ID = 4242
+
+
+def make_timestamps_context(cached=True, duration=7200):
+    context = make_context()
+    context.bot_data["settings"].TIMESTAMP_EDITOR_IDS = [_EDITOR_ID]
+    context.bot_data["cache"].exists = AsyncMock(return_value=cached)
+    context.bot_data["cache"].get_file_id = AsyncMock(return_value="FILEID")
+    context.bot_data["downloader"].fetch_metadata = AsyncMock(
+        return_value=TrackMetadata(
+            video_id="dQw4w9WgXcQ",
+            title="Long Mix",
+            chapters=None,
+            duration_seconds=duration,
+        )
+    )
+    return context
+
+
+class TestHandleTimestamps:
+    async def test_editor_can_store_and_track_is_resent(self):
+        update = make_update(
+            user_id=_EDITOR_ID, text=f"/timestamps {_TS_URL}\n{_TS_BODY}"
+        )
+        context = make_timestamps_context()
+
+        await handle_timestamps(update, context)
+
+        context.bot_data["cache"].store_manual_chapters.assert_awaited_once_with(
+            "dQw4w9WgXcQ", _TS_CHAPTERS
+        )
+        # Resent from the cached file_id rather than downloading again.
+        context.bot.send_audio.assert_awaited_once()
+        assert context.bot.send_audio.await_args.kwargs["audio"] == "FILEID"
+        context.bot_data["downloader"].download.assert_not_called()
+
+    async def test_non_editor_is_refused_and_nothing_is_stored(self):
+        update = make_update(user_id=999, text=f"/timestamps {_TS_URL}\n{_TS_BODY}")
+        context = make_timestamps_context()
+
+        await handle_timestamps(update, context)
+
+        context.bot_data["cache"].store_manual_chapters.assert_not_called()
+        assert "not allowed" in update.message.reply_text.await_args.args[0]
+
+    async def test_empty_editor_list_locks_everyone_out(self):
+        """Fail-closed, unlike ALLOWED_USER_IDS where empty means everyone."""
+        update = make_update(
+            user_id=_EDITOR_ID, text=f"/timestamps {_TS_URL}\n{_TS_BODY}"
+        )
+        context = make_timestamps_context()
+        context.bot_data["settings"].TIMESTAMP_EDITOR_IDS = []
+
+        await handle_timestamps(update, context)
+
+        context.bot_data["cache"].store_manual_chapters.assert_not_called()
+
+    async def test_parse_error_is_reported_and_nothing_is_stored(self):
+        update = make_update(
+            user_id=_EDITOR_ID, text=f"/timestamps {_TS_URL}\n5:00 Later\n1:00 Earlier"
+        )
+        context = make_timestamps_context()
+
+        await handle_timestamps(update, context)
+
+        context.bot_data["cache"].store_manual_chapters.assert_not_called()
+        assert "is not after" in update.message.reply_text.await_args.args[0]
+
+    async def test_timestamps_past_duration_are_rejected(self):
+        update = make_update(
+            user_id=_EDITOR_ID, text=f"/timestamps {_TS_URL}\n0:00 A\n99:00 B"
+        )
+        context = make_timestamps_context(duration=600)
+
+        await handle_timestamps(update, context)
+
+        context.bot_data["cache"].store_manual_chapters.assert_not_called()
+        assert "past the end" in update.message.reply_text.await_args.args[0]
+
+    async def test_metadata_failure_still_stores_without_duration_bound(self):
+        update = make_update(
+            user_id=_EDITOR_ID, text=f"/timestamps {_TS_URL}\n{_TS_BODY}"
+        )
+        context = make_timestamps_context()
+        context.bot_data["downloader"].fetch_metadata = AsyncMock(
+            side_effect=DownloadError("boom")
+        )
+
+        await handle_timestamps(update, context)
+
+        context.bot_data["cache"].store_manual_chapters.assert_awaited_once_with(
+            "dQw4w9WgXcQ", _TS_CHAPTERS
+        )
+
+    async def test_uncached_track_stores_without_resending(self):
+        update = make_update(
+            user_id=_EDITOR_ID, text=f"/timestamps {_TS_URL}\n{_TS_BODY}"
+        )
+        context = make_timestamps_context(cached=False)
+
+        await handle_timestamps(update, context)
+
+        context.bot_data["cache"].store_manual_chapters.assert_awaited_once()
+        context.bot.send_audio.assert_not_called()
+        assert "Saved 3 timestamps" in update.message.reply_text.await_args.args[0]
+
+    async def test_clear_removes_stored_timestamps(self):
+        update = make_update(user_id=_EDITOR_ID, text=f"/timestamps {_TS_URL} clear")
+        context = make_timestamps_context()
+        context.bot_data["cache"].delete_manual_chapters = AsyncMock(return_value=True)
+
+        await handle_timestamps(update, context)
+
+        context.bot_data["cache"].delete_manual_chapters.assert_awaited_once_with(
+            "dQw4w9WgXcQ"
+        )
+        context.bot_data["cache"].store_manual_chapters.assert_not_called()
+        assert "Removed" in update.message.reply_text.await_args.args[0]
+
+    async def test_body_only_command_shows_usage(self):
+        update = make_update(user_id=_EDITOR_ID, text=f"/timestamps {_TS_URL}")
+        context = make_timestamps_context()
+
+        await handle_timestamps(update, context)
+
+        context.bot_data["cache"].store_manual_chapters.assert_not_called()
+        assert "Usage:" in update.message.reply_text.await_args.args[0]
+
+    async def test_playlist_url_is_rejected(self):
+        playlist = (
+            "https://www.youtube.com/playlist?list=PLFgquLnL59alCl_2TQvOiD5Vgm1hCaGSI"
+        )
+        update = make_update(
+            user_id=_EDITOR_ID, text=f"/timestamps {playlist}\n{_TS_BODY}"
+        )
+        context = make_timestamps_context()
+
+        await handle_timestamps(update, context)
+
+        context.bot_data["cache"].store_manual_chapters.assert_not_called()
+        assert "single tracks only" in update.message.reply_text.await_args.args[0]
+
+    async def test_storage_failure_is_reported(self):
+        update = make_update(
+            user_id=_EDITOR_ID, text=f"/timestamps {_TS_URL}\n{_TS_BODY}"
+        )
+        context = make_timestamps_context()
+        context.bot_data["cache"].store_manual_chapters = AsyncMock(
+            side_effect=OSError("disk full")
+        )
+
+        await handle_timestamps(update, context)
+
+        context.bot.send_audio.assert_not_called()
+        assert "Could not save" in update.message.reply_text.await_args.args[0]
+
+
+class TestManualChaptersPrecedence:
+    async def test_refresh_does_not_undo_manual_chapters(self):
+        """Upstream chapters are still stored, but the manual set is displayed."""
+        update = make_update(text=f"/refresh {_TS_URL}")
+        context = make_context()
+        cache = context.bot_data["cache"]
+        cache.exists = AsyncMock(return_value=True)
+        cache.get_file_id = AsyncMock(return_value="FILEID")
+        cache.get_chapters = AsyncMock(return_value=((0, "Upstream"),))
+        cache.get_manual_chapters = AsyncMock(return_value=_TS_CHAPTERS)
+        context.bot_data["downloader"].fetch_metadata = AsyncMock(
+            return_value=TrackMetadata(
+                video_id="dQw4w9WgXcQ",
+                title="Long Mix",
+                chapters=((0, "Upstream"), (60, "Also upstream")),
+                duration_seconds=7200,
+            )
+        )
+
+        await handle_refresh(update, context)
+
+        # The fresh upstream chapters are persisted...
+        cache.store_chapters.assert_awaited_once_with(
+            "dQw4w9WgXcQ", ((0, "Upstream"), (60, "Also upstream"))
+        )
+        # ...but the caption shows the hand-entered ones.
+        caption = context.bot.send_audio.await_args.kwargs["caption"]
+        assert "Closer" in caption
+        assert "Upstream" not in caption
+
+    async def test_empty_manual_override_suppresses_upstream_chapters(self):
+        context = make_context()
+        cache = context.bot_data["cache"]
+        cache.get_chapters = AsyncMock(return_value=((0, "Upstream"),))
+        cache.get_manual_chapters = AsyncMock(return_value=())
+
+        assert await handlers_module._effective_chapters(cache, "dQw4w9WgXcQ") is None
+
+    async def test_upstream_used_when_no_manual_set(self):
+        context = make_context()
+        cache = context.bot_data["cache"]
+        cache.get_chapters = AsyncMock(return_value=((0, "Upstream"),))
+
+        result = await handlers_module._effective_chapters(cache, "dQw4w9WgXcQ")
+        assert result == ((0, "Upstream"),)
+
+    async def test_manual_read_failure_falls_back_to_upstream(self):
+        context = make_context()
+        cache = context.bot_data["cache"]
+        cache.get_chapters = AsyncMock(return_value=((0, "Upstream"),))
+        cache.get_manual_chapters = AsyncMock(side_effect=OSError("gone"))
+
+        result = await handlers_module._effective_chapters(cache, "dQw4w9WgXcQ")
+        assert result == ((0, "Upstream"),)

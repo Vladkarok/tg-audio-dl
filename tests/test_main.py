@@ -111,7 +111,7 @@ def test_build_application_registers_handlers():
         build_application(settings)
 
     # Verify handlers were added
-    assert mock_app.add_handler.call_count == 7
+    assert mock_app.add_handler.call_count == 8
     # A catch-all error handler must be registered (so pool/network errors are
     # logged instead of "No error handlers are registered").
     mock_app.add_error_handler.assert_called_once()
@@ -124,9 +124,9 @@ def test_build_application_registers_handlers():
     ]
     message_handlers = [h for h in added_handlers if isinstance(h, MessageHandler)]
 
-    assert len(command_handlers) == 5, (
-        "Expected exactly 5 CommandHandlers "
-        "(/start, /help, /redownload, /refresh, /chapters)"
+    assert len(command_handlers) == 6, (
+        "Expected exactly 6 CommandHandlers "
+        "(/start, /help, /redownload, /refresh, /chapters, /timestamps)"
     )
     assert len(callback_handlers) == 1, "Expected chapter-page CallbackQueryHandler"
     assert len(message_handlers) == 1, "Expected exactly 1 MessageHandler (URL filter)"
@@ -137,6 +137,7 @@ def test_build_application_registers_handlers():
     assert "redownload" in command_names
     assert "refresh" in command_names
     assert "chapters" in command_names
+    assert "timestamps" in command_names
 
 
 def test_build_application_stores_settings_in_bot_data():

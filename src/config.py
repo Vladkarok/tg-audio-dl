@@ -6,15 +6,17 @@ from typing import Any
 from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, EnvSettingsSource, SettingsConfigDict
 
+_USER_ID_LIST_FIELDS = frozenset(("ALLOWED_USER_IDS", "TIMESTAMP_EDITOR_IDS"))
+
 
 class _CommaSeparatedEnvSource(EnvSettingsSource):
-    """Custom env source that treats ALLOWED_USER_IDS as a plain string
+    """Custom env source that treats the user-id list settings as plain strings
     instead of attempting JSON decoding on comma-separated values."""
 
     def prepare_field_value(
         self, field_name: str, field: Any, value: Any, value_is_complex: bool
     ) -> Any:
-        if field_name == "ALLOWED_USER_IDS" and isinstance(value, str):
+        if field_name in _USER_ID_LIST_FIELDS and isinstance(value, str):
             # Return raw string; pydantic model_validator will parse it
             return value
         return super().prepare_field_value(field_name, field, value, value_is_complex)
@@ -45,6 +47,12 @@ class Settings(BaseSettings):
 
     MAX_FILE_SIZE_MB: int = 2000
     ALLOWED_USER_IDS: list[int] = []
+    # Who may write hand-entered chapter timestamps with /timestamps. Unlike
+    # ALLOWED_USER_IDS (empty = everyone), this one is fail-closed: empty means
+    # nobody can edit. Manual chapters are stored per video_id and shown to
+    # every user who requests that track, so write access is not something to
+    # hand out by default.
+    TIMESTAMP_EDITOR_IDS: list[int] = []
     LOG_LEVEL: str = "INFO"
     PLAYLIST_MAX_TRACKS: int = 50
     RATE_LIMIT_PER_MINUTE: int = 5
@@ -100,7 +108,7 @@ class Settings(BaseSettings):
             return None
         return v
 
-    @field_validator("ALLOWED_USER_IDS", mode="before")
+    @field_validator("ALLOWED_USER_IDS", "TIMESTAMP_EDITOR_IDS", mode="before")
     @classmethod
     def parse_allowed_user_ids(cls, v: Any) -> list[int]:
         if v is None or v == "":
