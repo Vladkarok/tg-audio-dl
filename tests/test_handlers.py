@@ -2506,3 +2506,26 @@ class TestTimestampsByReply:
 
         context.bot_data["cache"].store_manual_chapters.assert_not_called()
         assert "Usage:" in update.message.reply_text.await_args.args[0]
+
+
+class TestHelpTextScoping:
+    async def test_editors_are_told_about_timestamps(self):
+        update = make_update(user_id=_EDITOR_ID, text="/help")
+        context = make_context()
+        context.bot_data["settings"].TIMESTAMP_EDITOR_IDS = [_EDITOR_ID]
+
+        await handle_help(update, context)
+
+        assert "/timestamps" in update.message.reply_text.await_args.args[0]
+
+    async def test_everyone_else_is_not(self):
+        """The command menu hides it from non-editors; help must agree."""
+        update = make_update(user_id=999, text="/help")
+        context = make_context()
+        context.bot_data["settings"].TIMESTAMP_EDITOR_IDS = [_EDITOR_ID]
+
+        await handle_help(update, context)
+
+        text = update.message.reply_text.await_args.args[0]
+        assert "/timestamps" not in text
+        assert "/refresh" in text

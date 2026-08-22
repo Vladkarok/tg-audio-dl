@@ -156,6 +156,12 @@ _HELP_TEXT = (
     "from scratch.\n"
     "• /chapters <URL> — browse a cached track's chapters as paginated "
     "captions with navigation buttons.\n"
+)
+
+# Only appended for TIMESTAMP_EDITOR_IDS. The command menu already hides
+# /timestamps from everyone else, so telling non-editors about a command that
+# will refuse them would undo that.
+_HELP_TEXT_EDITOR = (
     "• /timestamps <URL> — followed by a pasted timestamp list, sets the "
     "chapters yourself when the uploader never published any. You can also "
     "reply to an audio message with /timestamps and the list to add them to "
@@ -233,7 +239,10 @@ async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if not _is_user_allowed(update.effective_user.id, settings):
         logger.warning("Rejected /help from user %d", update.effective_user.id)
         return
-    await update.message.reply_text(_HELP_TEXT)
+    help_text = _HELP_TEXT
+    if _is_timestamp_editor(update.effective_user.id, settings):
+        help_text += _HELP_TEXT_EDITOR
+    await update.message.reply_text(help_text)
 
 
 # ---------------------------------------------------------------------------

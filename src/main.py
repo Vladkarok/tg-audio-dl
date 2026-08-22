@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from telegram import Bot, BotCommand, BotCommandScopeChat
+from telegram.error import TelegramError
 from telegram.ext import (
     Application,
     ApplicationBuilder,
@@ -161,6 +162,11 @@ _EDITOR_COMMANDS: tuple[tuple[str, str], ...] = (
     ("timestamps", "Set chapter timestamps by hand"),
 )
 
+# The menu is a nicety and must never hold up polling. Without these, the calls
+# inherit the 300s read/write defaults and an unhealthy endpoint keeps the bot
+# offline for minutes at startup.
+_COMMAND_TIMEOUTS = {"read_timeout": 10, "write_timeout": 10, "connect_timeout": 10}
+
 
 async def _register_commands(
     application: Application[Any, Any, Any, Any, Any, Any],
@@ -175,13 +181,22 @@ async def _register_commands(
     Editor-scoped calls only reach chats the bot can address, which in practice
     means the editor has already started a conversation with it. Telegram
     clients also cache the menu, so a change can take a while to appear.
+
+    Two known gaps, both cosmetic because the handler enforces authorization
+    regardless of what the menu says:
+
+    - An editor who has never opened the chat gets "chat not found" here and
+      keeps the public menu until the next restart; nothing retries.
+    - Removing someone from TIMESTAMP_EDITOR_IDS leaves their chat-scoped menu
+      in place on Telegram's side, since calling delete_my_commands for them
+      would mean remembering who used to be an editor.
     """
     log = logging.getLogger(__name__)
     public = [BotCommand(name, description) for name, description in _PUBLIC_COMMANDS]
 
     try:
-        await application.bot.set_my_commands(public)
-    except Exception as exc:
+        await application.bot.set_my_commands(public, **_COMMAND_TIMEOUTS)
+    except TelegramError as exc:
         log.warning("Could not publish the command menu: %s", exc)
         return
 
@@ -192,9 +207,11 @@ async def _register_commands(
         try:
             # In a private chat the chat id is the user id.
             await application.bot.set_my_commands(
-                editor, scope=BotCommandScopeChat(chat_id=user_id)
+                editor,
+                scope=BotCommandScopeChat(chat_id=user_id),
+                **_COMMAND_TIMEOUTS,
             )
-        except Exception as exc:
+        except TelegramError as exc:
             log.warning(
                 "Could not publish editor commands to chat %s: %s", user_id, exc
             )

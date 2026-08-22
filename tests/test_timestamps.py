@@ -146,13 +146,28 @@ class TestTitleLengthCeiling:
         title = "A" * MAX_TITLE_CHARS
         assert parse_timestamps(f"0:00 {title}") == ((0, title),)
 
+    def test_worst_case_entry_fits_a_page_body(self):
+        """The binding case is the longest legal timestamp, not a short one:
+        999:59:59 renders a 9-char prefix plus " - ", so a cap that passes with
+        0:00 can still make _build_chapter_pages give up here — and that kills
+        navigation for the whole track, not just the offending line."""
+        from src.bot.captions import _CHAPTER_PAGE_BODY_MAX, _format_timestamp
+
+        longest_prefix = f"{_format_timestamp(999 * 3600 + 59 * 60 + 59)} - "
+        assert len(longest_prefix) == 12
+        assert len(longest_prefix) + MAX_TITLE_CHARS <= _CHAPTER_PAGE_BODY_MAX
+
     def test_longest_allowed_title_still_paginates(self):
-        """A page that cannot hold a single entry makes _build_chapter_pages
-        give up, which would kill navigation for the whole track."""
+        """The same bound, exercised end to end through the real renderer."""
         from src.bot.captions import _build_chapter_pages
 
+        title = "A" * MAX_TITLE_CHARS
         chapters = parse_timestamps(
-            "\n".join(f"{i}:00 {'A' * MAX_TITLE_CHARS}" for i in range(10))
+            "\n".join(f"{h}:59:59 {title}" for h in range(1, 11))
         )
         pages = _build_chapter_pages("Long Mix", chapters)
         assert pages, "maximum-length titles must still be paginatable"
+        # Every entry must survive into the pages; silent dropping would make
+        # the assertion above meaningless.
+        rendered = "".join(page.caption for page in pages)
+        assert rendered.count(title) == len(chapters)

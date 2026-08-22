@@ -49,6 +49,7 @@ def make_settings(
     settings.MAX_FILE_SIZE_MB = max_file_size_mb
     settings.log_level = log_level
     settings.LOG_LEVEL = log_level
+    settings.TIMESTAMP_EDITOR_IDS = []
     return settings
 
 
@@ -233,6 +234,7 @@ async def test_post_init_creates_cache_dir(tmp_path):
 
     mock_app = MagicMock()
     mock_app.bot_data = {"settings": settings}
+    mock_app.bot.set_my_commands = AsyncMock()
 
     with (
         patch("src.main.create_cache", return_value=MagicMock()),
@@ -252,6 +254,7 @@ async def test_post_init_wires_dependencies(tmp_path):
 
     mock_app = MagicMock()
     mock_app.bot_data = {"settings": settings}
+    mock_app.bot.set_my_commands = AsyncMock()
 
     fake_cache = MagicMock()
     fake_downloader = MagicMock()
@@ -284,6 +287,7 @@ async def test_post_init_uses_settings_token_attribute(tmp_path):
 
     mock_app = MagicMock()
     mock_app.bot_data = {"settings": settings}
+    mock_app.bot.set_my_commands = AsyncMock()
 
     with (
         patch("src.main.create_cache", return_value=MagicMock()),
