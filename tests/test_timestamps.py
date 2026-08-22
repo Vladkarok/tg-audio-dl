@@ -137,3 +137,22 @@ class TestSanitisation:
 
     def test_runs_of_whitespace_collapse(self):
         assert parse_timestamps("0:00 Two    words") == ((0, "Two words"),)
+
+
+class TestTitleLengthCeiling:
+    """The cap exists so one entry always fits on a chapter page by itself."""
+
+    def test_longest_allowed_title_is_accepted(self):
+        title = "A" * MAX_TITLE_CHARS
+        assert parse_timestamps(f"0:00 {title}") == ((0, title),)
+
+    def test_longest_allowed_title_still_paginates(self):
+        """A page that cannot hold a single entry makes _build_chapter_pages
+        give up, which would kill navigation for the whole track."""
+        from src.bot.captions import _build_chapter_pages
+
+        chapters = parse_timestamps(
+            "\n".join(f"{i}:00 {'A' * MAX_TITLE_CHARS}" for i in range(10))
+        )
+        pages = _build_chapter_pages("Long Mix", chapters)
+        assert pages, "maximum-length titles must still be paginatable"

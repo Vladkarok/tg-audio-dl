@@ -24,10 +24,15 @@ import unicodedata
 # (start_seconds, title)
 Chapter = tuple[int, str]
 
-# Limits. Chapter pages paginate, so the ceiling is about keeping one pasted
-# message from filling the cache with junk rather than a rendering constraint.
+# Limits. Total volume is bounded by MAX_INPUT_CHARS and MAX_CHAPTERS; the
+# per-title cap exists because one entry has to fit on a chapter page by itself.
+# The hard ceiling there is _CHAPTER_PAGE_BODY_MAX (970) minus the timestamp
+# prefix: overshoot it and _build_chapter_pages gives up, killing pagination for
+# the whole track rather than just that line. 300 leaves room for three entries
+# per page while still accepting the most verbose real tracklist entries
+# ("Artist feat. Someone - Title (Extended Club Mix) [Label 2019]" and longer).
 MAX_CHAPTERS = 300
-MAX_TITLE_CHARS = 120
+MAX_TITLE_CHARS = 300
 MAX_INPUT_CHARS = 20_000
 
 # 1:23 / 01:23 / 1:02:10 / 01:02:10. The hour part is optional; without it the

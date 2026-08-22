@@ -6,7 +6,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from telegram import Bot
+from telegram import Bot, BotCommand, BotCommandScopeChat
 from telegram.ext import (
     Application,
     ApplicationBuilder,
@@ -143,6 +143,63 @@ def setup_logging(log_level: str) -> None:
     logging.getLogger("urllib3").setLevel(logging.WARNING)
 
 
+# Slash-command menu published to Telegram at startup. Descriptions show up in
+# the client's "/" list, so they are written for someone who has never read the
+# help text.
+_PUBLIC_COMMANDS: tuple[tuple[str, str], ...] = (
+    ("start", "What this bot does"),
+    ("help", "Supported links and commands"),
+    ("refresh", "Re-check chapters for a track and resend it"),
+    ("redownload", "Drop the cached copy and download again"),
+    ("chapters", "Browse a cached track's chapters"),
+)
+
+# Only advertised to users who can actually use it — /timestamps refuses
+# everyone outside TIMESTAMP_EDITOR_IDS, and offering a command that always
+# says no is worse than not listing it.
+_EDITOR_COMMANDS: tuple[tuple[str, str], ...] = (
+    ("timestamps", "Set chapter timestamps by hand"),
+)
+
+
+async def _register_commands(
+    application: Application[Any, Any, Any, Any, Any, Any],
+    settings: Settings,
+) -> None:
+    """Publish the slash-command menu via setMyCommands.
+
+    Best-effort: a Telegram hiccup here must not stop the bot from starting.
+    The menu is bot-level state that survives on Telegram's side, so a failed
+    call leaves the previous menu in place rather than an empty one.
+
+    Editor-scoped calls only reach chats the bot can address, which in practice
+    means the editor has already started a conversation with it. Telegram
+    clients also cache the menu, so a change can take a while to appear.
+    """
+    log = logging.getLogger(__name__)
+    public = [BotCommand(name, description) for name, description in _PUBLIC_COMMANDS]
+
+    try:
+        await application.bot.set_my_commands(public)
+    except Exception as exc:
+        log.warning("Could not publish the command menu: %s", exc)
+        return
+
+    editor = public + [
+        BotCommand(name, description) for name, description in _EDITOR_COMMANDS
+    ]
+    for user_id in settings.TIMESTAMP_EDITOR_IDS:
+        try:
+            # In a private chat the chat id is the user id.
+            await application.bot.set_my_commands(
+                editor, scope=BotCommandScopeChat(chat_id=user_id)
+            )
+        except Exception as exc:
+            log.warning(
+                "Could not publish editor commands to chat %s: %s", user_id, exc
+            )
+
+
 async def post_init(application: Application[Any, Any, Any, Any, Any, Any]) -> None:
     """Called after application is initialized. Wire dependencies into bot_data."""
     settings = application.bot_data["settings"]
@@ -203,6 +260,8 @@ async def post_init(application: Application[Any, Any, Any, Any, Any, Any]) -> N
 
     # Liveness watchdog — restarts the bot if it can no longer reach Telegram.
     _start_heartbeat(application, settings)
+
+    await _register_commands(application, settings)
 
     logging.getLogger(__name__).info("Bot initialized and ready")
 

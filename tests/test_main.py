@@ -11,7 +11,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from telegram.error import TimedOut
+from telegram.error import BadRequest, NetworkError, TimedOut
 
 from src.main import (
     _error_handler,
@@ -19,6 +19,7 @@ from src.main import (
     _heartbeat_loop,
     _heartbeat_probe,
     _record_heartbeat,
+    _register_commands,
     _start_heartbeat,
     build_application,
     post_init,
@@ -438,3 +439,84 @@ class TestHeartbeat:
         thread_cls.return_value.start.assert_called_once()
         # Deadline = interval*max_failures + probe_timeout; checks every interval.
         assert thread_cls.call_args.kwargs.get("args") == (30 * 3 + 20, 30)
+
+
+# ---------------------------------------------------------------------------
+# Slash-command menu (setMyCommands)
+# ---------------------------------------------------------------------------
+
+
+def _commands_app(editor_ids=()):
+    settings = make_settings()
+    settings.TIMESTAMP_EDITOR_IDS = list(editor_ids)
+    app = MagicMock()
+    app.bot = MagicMock()
+    app.bot.set_my_commands = AsyncMock()
+    app.bot_data = {"settings": settings}
+    return app, settings
+
+
+async def test_register_commands_publishes_the_public_menu():
+    app, settings = _commands_app()
+
+    await _register_commands(app, settings)
+
+    app.bot.set_my_commands.assert_awaited_once()
+    published = app.bot.set_my_commands.await_args.args[0]
+    names = [c.command for c in published]
+    assert names == ["start", "help", "refresh", "redownload", "chapters"]
+    assert "timestamps" not in names, "editors-only command must not be public"
+    assert all(c.description for c in published)
+
+
+async def test_editors_additionally_see_timestamps():
+    app, settings = _commands_app(editor_ids=[4242])
+
+    await _register_commands(app, settings)
+
+    assert app.bot.set_my_commands.await_count == 2
+    scoped_call = app.bot.set_my_commands.await_args_list[1]
+    names = [c.command for c in scoped_call.args[0]]
+    assert "timestamps" in names
+    assert scoped_call.kwargs["scope"].chat_id == 4242
+
+
+async def test_public_failure_does_not_stop_startup():
+    """A Telegram hiccup must not prevent the bot from running."""
+    app, settings = _commands_app(editor_ids=[4242])
+    app.bot.set_my_commands = AsyncMock(side_effect=NetworkError("down"))
+
+    await _register_commands(app, settings)  # must not raise
+
+    # The scoped call is skipped once the public one failed.
+    assert app.bot.set_my_commands.await_count == 1
+
+
+async def test_scoped_failure_is_tolerated():
+    app, settings = _commands_app(editor_ids=[4242, 9999])
+    app.bot.set_my_commands = AsyncMock(
+        side_effect=[None, BadRequest("chat not found"), None]
+    )
+
+    await _register_commands(app, settings)  # must not raise
+
+    assert app.bot.set_my_commands.await_count == 3
+
+
+async def test_post_init_registers_the_menu(tmp_path):
+    cache_dir = tmp_path / "cache"
+    settings = make_settings(cache_dir=cache_dir)
+    settings.TIMESTAMP_EDITOR_IDS = []
+
+    mock_app = MagicMock()
+    mock_app.bot_data = {"settings": settings}
+    mock_app.bot.set_my_commands = AsyncMock()
+
+    with (
+        patch("src.main.create_cache", return_value=MagicMock()),
+        patch("src.main.AudioDownloader", return_value=MagicMock()),
+        patch("src.main._start_heartbeat"),
+    ):
+        await post_init(mock_app)
+
+    mock_app.bot.set_my_commands.assert_awaited_once()
