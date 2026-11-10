@@ -1,0 +1,58 @@
+version: 2
+
+updates:
+  # Python dependencies (uv.lock). yt-dlp is excluded because
+  # .github/workflows/update-yt-dlp.yml bumps and releases it on its own.
+  - package-ecosystem: "uv"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    ignore:
+      - dependency-name: "yt-dlp"
+    groups:
+      runtime:
+        dependency-type: "production"
+        update-types: ["minor", "patch"]
+      dev:
+        dependency-type: "development"
+        update-types: ["minor", "patch"]
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore"
+
+  # Workflow actions (SHA-pinned; Dependabot updates the SHA and the comment).
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    groups:
+      actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: "ci"
+
+  # Dockerfile base image and the uv image it copies from.
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    groups:
+      docker:
+        patterns: ["*"]
+    commit-message:
+      prefix: "chore"
+
+  # docker-compose.yml service images (telegram-bot-api sidecar).
+  - package-ecosystem: "docker-compose"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    groups:
+      compose:
+        patterns: ["*"]
+    commit-message:
+      prefix: "chore"
