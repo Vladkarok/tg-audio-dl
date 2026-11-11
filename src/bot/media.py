@@ -23,7 +23,7 @@ def _extract_audio_metadata(file_path: Path) -> tuple[str | None, str | None]:
     auto-detection.
     """
     try:
-        audio = mutagen.File(file_path)  # type: ignore[attr-defined]
+        audio = mutagen.File(file_path)
         if audio is None or audio.tags is None:
             return None, None
         tags = audio.tags
@@ -71,7 +71,7 @@ def _extract_thumbnail(file_path: Path) -> InputFile | None:
     Images are resized to max 320x320 to comply with Telegram's thumbnail limits.
     """
     try:
-        audio = mutagen.File(file_path)  # type: ignore[attr-defined]
+        audio = mutagen.File(file_path)
         if audio is None or audio.tags is None:
             return None
         tags = audio.tags
