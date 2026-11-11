@@ -2,7 +2,7 @@ name: youtube-download-bot
 
 services:
   telegram-bot-api:
-    image: aiogram/telegram-bot-api:7.11
+    image: aiogram/telegram-bot-api:10.2
     restart: unless-stopped
     environment:
       TELEGRAM_API_ID: ${TELEGRAM_API_ID}
