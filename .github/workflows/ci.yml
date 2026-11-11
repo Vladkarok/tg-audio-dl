@@ -95,6 +95,33 @@ jobs:
       - name: Type check
         run: uv run mypy src/
 
+  # Catches a broken Dockerfile or base image on the PR instead of at release
+  # time. Builds only: no registry login, no push, no secrets. Skipped for tags
+  # and for workflow_call, where the build job below does the real build.
+  build-check:
+    name: Build image (no push)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request' || github.event_name == 'push' && startsWith(github.ref, 'refs/heads/')
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+
+      - name: Build image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
+        with:
+          context: .
+          push: false
+          platforms: linux/amd64
+          cache-from: type=gha
+          # Branch pushes write the cache so tag builds (which can read the
+          # default branch's cache) start warm; PR builds only read it.
+          cache-to: ${{ github.event_name == 'push' && 'type=gha,mode=max' || '' }}
+
   build:
     name: Build and push image
     runs-on: ubuntu-latest
