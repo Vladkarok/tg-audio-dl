@@ -1,4 +1,4 @@
-FROM python:3.13-slim AS builder
+FROM python:3.15-slim AS builder
 
 WORKDIR /app
 
@@ -12,7 +12,7 @@ COPY pyproject.toml uv.lock* ./
 RUN uv sync --frozen --no-dev --no-install-project
 
 # Production stage
-FROM python:3.13-slim AS final
+FROM python:3.15-slim AS final
 
 # Install ffmpeg and nodejs (ffmpeg for audio conversion, nodejs for yt-dlp JS challenge solving)
 RUN apt-get update && apt-get install -y --no-install-recommends \
