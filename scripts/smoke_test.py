@@ -10,7 +10,9 @@ Or from the host:
         python3 /app/scripts/smoke_test.py"
 """
 
+import importlib.metadata
 import os
+import re
 import shutil
 import socket
 import sys
@@ -19,6 +21,9 @@ import urllib.request
 
 # "Me at the zoo" — first YT video, always public
 TEST_URL = "https://www.youtube.com/watch?v=jNQXAC9IVRw"
+
+# Must match _js_runtimes() in src/downloader/client.py (a test checks).
+JS_RUNTIMES = {"deno": {}}
 
 ICON_OK = "\033[92m✓\033[0m"
 FAIL = "\033[91m✗\033[0m"
@@ -119,21 +124,88 @@ def _check_egress_differs(proxy_url: str) -> int:
     return 0
 
 
+def _required_ejs_version() -> str | None:
+    """The exact yt-dlp-ejs version this yt-dlp release pins, from its metadata.
+
+    yt-dlp only uses solver scripts whose version matches the one it was
+    released with, and its ``default`` extra pins that version exactly.
+    """
+    for req in importlib.metadata.requires("yt-dlp") or []:
+        m = re.match(r"yt-dlp-ejs\s*==\s*([^\s;]+)", req)
+        if m:
+            return m.group(1)
+    return None
+
+
+def check_js_challenge_solver() -> int:
+    """Return the number of failed checks for YouTube's JS challenge solving.
+
+    Both halves are properties of the image alone (no network): a JS runtime
+    yt-dlp reports as supported, and the yt-dlp-ejs solver scripts at the
+    version yt-dlp expects. Without either, yt-dlp only warns and YouTube
+    extraction degrades, so this is where a broken image gets caught.
+    """
+    import yt_dlp
+
+    failures = 0
+
+    runtime_ok = False
+    runtime_detail = "none of: " + ", ".join(JS_RUNTIMES)
+    try:
+        with yt_dlp.YoutubeDL({"quiet": True, "js_runtimes": dict(JS_RUNTIMES)}) as ydl:
+            # yt-dlp's own detection, the same one behind "JS runtimes:" in
+            # `yt-dlp -v`. Private attribute: if a yt-dlp release renames it,
+            # this check fails and says so rather than passing blindly.
+            runtimes = ydl._js_runtimes
+        found = []
+        for name, runtime in runtimes.items():
+            info = runtime.info if runtime is not None else None
+            if info is None:
+                found.append(f"{name} not found")
+                continue
+            label = f"{info.name}-{info.version} at {info.path}"
+            if info.supported:
+                runtime_ok = True
+                found.append(label)
+            else:
+                found.append(f"{label} (unsupported)")
+        runtime_detail = "; ".join(found) or runtime_detail
+    except Exception as exc:
+        runtime_detail = f"could not query yt-dlp: {exc!r}"
+    if not check("JS runtime supported by yt-dlp", runtime_ok, runtime_detail):
+        failures += 1
+
+    try:
+        wanted = _required_ejs_version()
+    except importlib.metadata.PackageNotFoundError:
+        check("yt-dlp-ejs solver scripts", False, "no yt-dlp package metadata")
+        return failures + 1
+    try:
+        installed = importlib.metadata.version("yt-dlp-ejs")
+    except importlib.metadata.PackageNotFoundError:
+        check("yt-dlp-ejs solver scripts", False, "yt-dlp-ejs not installed")
+        return failures + 1
+    if wanted is None:
+        ejs_ok = False
+        ejs_detail = f"{installed} installed, but yt-dlp declares no yt-dlp-ejs pin"
+    else:
+        ejs_ok = installed == wanted
+        ejs_detail = f"{installed} installed, yt-dlp wants {wanted}"
+    if not check("yt-dlp-ejs solver scripts", ejs_ok, ejs_detail):
+        failures += 1
+    return failures
+
+
 def main() -> int:
     print("\n=== tg-audio-dl smoke test ===\n")
     failures = 0
 
-    # --- 1. Node.js available ---
-    node = shutil.which("node")
-    if not check("Node.js installed", node is not None, node or "not found"):
-        failures += 1
-
-    # --- 2. ffmpeg available ---
+    # --- 1. ffmpeg available ---
     ffmpeg = shutil.which("ffmpeg")
     if not check("ffmpeg installed", ffmpeg is not None, ffmpeg or "not found"):
         failures += 1
 
-    # --- 3. yt-dlp importable ---
+    # --- 2. yt-dlp importable ---
     try:
         import yt_dlp
 
@@ -143,6 +215,9 @@ def main() -> int:
         failures += 1
         print("\nCannot continue without yt-dlp.\n")
         return failures
+
+    # --- 3. JS challenge solving (runtime + solver scripts) ---
+    failures += check_js_challenge_solver()
 
     # --- 4. Proxy ---
     proxy_url = os.environ.get("PROXY_URL", "").strip()
@@ -194,7 +269,7 @@ def main() -> int:
             "quiet": True,
             "no_warnings": False,
             "skip_download": True,
-            "js_runtimes": {"node": {}},
+            "js_runtimes": dict(JS_RUNTIMES),
         }
         if proxy_url:
             opts["proxy"] = proxy_url

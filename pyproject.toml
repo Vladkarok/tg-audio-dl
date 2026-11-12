@@ -9,7 +9,11 @@ description = "Telegram bot for downloading YouTube audio"
 requires-python = ">=3.13"
 dependencies = [
     "python-telegram-bot>=20.7",
-    "yt-dlp>=2024.1.1",
+    # default: yt-dlp-ejs (YouTube challenge solver scripts) plus yt-dlp's
+    # other recommended libraries. pin-deno: the deno JS runtime that runs
+    # those scripts, as a wheel in the venv. Each yt-dlp release pins both
+    # with ==, so they follow yt-dlp through uv.lock and update-yt-dlp.yml.
+    "yt-dlp[default,pin-deno]>=2026.10.26",
     "pydantic-settings>=2.7",
     "aiofiles>=23.0",
     "pysocks>=1.7",
