@@ -35,9 +35,10 @@ jobs:
           ref: ${{ inputs.build_tag || github.ref }}
 
       # Test on the Python the image runs, read from the Dockerfile so a base
-      # image bump is tested without a second edit. .python-version stays on
-      # the local dev version. The pinned uv only knows a 3.15 alpha build, so
-      # setup-python provides the interpreter and uv may not download one.
+      # image bump is tested without a second edit (UV_PYTHON overrides
+      # .python-version). setup-python provides the interpreter and uv may not
+      # download one: a uv release that only knows a pre-release of a new
+      # minor version would otherwise test on that alpha without saying so.
       - name: Read runtime Python version
         run: |
           PY="$(sed -n 's/^FROM python:\([0-9.]*\)-slim AS final$/\1/p' Dockerfile)"
@@ -56,7 +57,7 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10
         with:
-          version: "0.10.10"
+          version: "0.13.7"
           enable-cache: true
 
       - name: Install dependencies
@@ -80,7 +81,7 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10
         with:
-          version: "0.10.10"
+          version: "0.13.7"
           enable-cache: true
 
       - name: Install dependencies

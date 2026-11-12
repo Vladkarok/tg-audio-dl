@@ -57,4 +57,4 @@ git tag v1.2.3 && git push origin v1.2.3
 
 ## Tech stack
 
-Python 3.13 · python-telegram-bot · yt-dlp · pydantic-settings · boto3 · mutagen · Docker
+Python 3.15 · python-telegram-bot · yt-dlp · pydantic-settings · boto3 · mutagen · Docker
