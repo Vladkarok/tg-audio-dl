@@ -39,6 +39,8 @@ addopts = "--cov=src --cov-report=term-missing --cov-fail-under=80 -v"
 
 [tool.ruff]
 line-length = 88
+# Matches requires-python. py315 would ask for rewrites in src/ (UP037,
+# unparenthesized except) that are a separate change.
 target-version = "py313"
 
 [tool.ruff.lint]
@@ -55,7 +57,7 @@ ignore = ["S101"]  # allow assert in tests
 ]
 
 [tool.mypy]
-python_version = "3.13"
+python_version = "3.15"
 strict = true
 warn_return_any = true
 warn_unused_ignores = true
