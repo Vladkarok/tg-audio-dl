@@ -10,7 +10,7 @@ requires-python = ">=3.13"
 dependencies = [
     "python-telegram-bot>=20.7",
     "yt-dlp>=2024.1.1",
-    "pydantic-settings>=2.0",
+    "pydantic-settings>=2.7",
     "aiofiles>=23.0",
     "pysocks>=1.7",
     "mutagen>=1.47",
