@@ -16,7 +16,7 @@ FROM python:3.15-slim AS final
 
 # ffmpeg for audio conversion. The JavaScript runtime yt-dlp needs for
 # YouTube's challenges (deno) and its solver scripts (yt-dlp-ejs) come from
-# uv.lock via the yt-dlp[default,deno] extras, not from apt: Debian's nodejs
+# uv.lock via the yt-dlp[default,pin-deno] extras, not from apt: Debian's nodejs
 # is older than yt-dlp's minimum supported version.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
