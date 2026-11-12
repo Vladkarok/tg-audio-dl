@@ -10,7 +10,11 @@
 #   decision=release|hold
 #   reason=<short text>
 #   last_tag=<highest vX.Y.Z tag reachable from HEAD, or empty>
-#   next_tag=<last_tag with PATCH+1, or empty when there is no last_tag>
+#   next_tag=<suggested tag: PATCH+1 of last_tag, or of the newest v* tag
+#             anywhere when that one is newer; empty when there is no last_tag>
+#
+# Any failure exits non-zero before decision=release is printed, so a broken
+# run can only hold or fail, never release.
 set -euo pipefail
 
 BOT_EMAIL="github-actions[bot]@users.noreply.github.com"
@@ -35,29 +39,45 @@ if [[ -z $last_tag ]]; then
   exit 0
 fi
 
-[[ $last_tag =~ $SEMVER_RE ]]
-next_tag="v${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.$((BASH_REMATCH[3] + 1))"
-emit next_tag "$next_tag"
+bump_patch() {
+  [[ $1 =~ $SEMVER_RE ]]
+  printf 'v%s.%s.%s' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" \
+    "$((BASH_REMATCH[3] + 1))"
+}
 
 newest_anywhere=$(highest_tag)
 if [[ $newest_anywhere != "$last_tag" ]]; then
+  # last_tag+1 may already exist off master, so suggest past the newest tag.
+  next_tag=$(bump_patch "$newest_anywhere")
+  emit next_tag "$next_tag"
   emit decision hold
   emit reason "$newest_anywhere is newer than $last_tag but not on master"
   exit 0
 fi
 
+next_tag=$(bump_patch "$last_tag")
+emit next_tag "$next_tag"
+
+# Capture first: a failing command substitution aborts under set -e, while a
+# failing process substitution would just feed the loop nothing.
+shas=$(git rev-list "$last_tag..HEAD")
+
 others=0
 while read -r sha; do
+  [[ -n $sha ]] || continue
+  meta=$(git log -1 --format='%P%x1f%ae%x1f%ce%x1f%s' "$sha")
   # %P lists parent hashes: exactly one means not a merge.
-  IFS=$'\x1f' read -r parents email subject \
-    < <(git log -1 --format='%P%x1f%ae%x1f%s' "$sha")
+  IFS=$'\x1f' read -r parents author committer subject <<<"$meta"
   files=$(git diff-tree --no-commit-id --name-only -r "$sha")
-  if [[ $parents != *" "* ]] && [[ $email == "$BOT_EMAIL" ]] \
+  # The committer check rejects a bot-authored commit that a person or GitHub
+  # committed (rebase merge, cherry-pick, git commit --author).
+  if [[ $parents != *" "* ]] && [[ $author == "$BOT_EMAIL" ]] \
+    && [[ $committer == "$BOT_EMAIL" ]] \
     && [[ $subject =~ $BUMP_SUBJECT_RE ]] && [[ $files == uv.lock ]]; then
     continue
   fi
   others=$((others + 1))
-done < <(git rev-list "$last_tag..HEAD")
+done <<<"$shas"
 
 if ((others > 0)); then
   emit decision hold

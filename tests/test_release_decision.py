@@ -158,6 +158,62 @@ def test_newer_tag_off_master_holds(repo: Repo) -> None:
     d = repo.decide()
     assert d["decision"] == "hold"
     assert "v1.3.0" in d["reason"]
+    # last_tag+1 would be v1.2.4; suggest past the newest tag instead.
+    assert d["next_tag"] == "v1.3.1"
+
+
+def test_off_master_tag_taking_next_patch_is_skipped(repo: Repo) -> None:
+    repo.git("tag", "v1.2.3")
+    repo.git("checkout", "-q", "-b", "other")
+    repo.commit("app.py", "x\n", "fix: on another branch")
+    repo.git("tag", "v1.2.4")
+    repo.git("checkout", "-q", "master")
+    d = repo.decide()
+    assert d["decision"] == "hold"
+    assert d["next_tag"] == "v1.2.5"
+
+
+def test_bot_author_with_human_committer_holds(repo: Repo) -> None:
+    # A rebase merge or `git commit --author` keeps the bot as author but
+    # records a person (or GitHub) as committer.
+    repo.git("tag", "v1.2.3")
+    (repo.path / "uv.lock").write_text("lock 9\n")
+    repo.git("add", "uv.lock")
+    repo.git(
+        "commit",
+        "-q",
+        "-m",
+        "chore: bump yt-dlp a → b",
+        f"--author={BOT[0]} <{BOT[1]}>",
+    )
+    assert repo.git("log", "-1", "--format=%ae %ce").split() == [BOT[1], HUMAN[1]]
+    assert repo.decide()["decision"] == "hold"
+
+
+def test_git_failure_never_releases(
+    repo: Repo, tmp_path_factory: pytest.TempPathFactory
+) -> None:
+    # Only bot bumps since the tag, so a silent zero-iteration loop would
+    # release. A failing rev-list must abort the script instead.
+    repo.git("tag", "v1.2.3")
+    repo.bot_bump(1)
+    shim = tmp_path_factory.mktemp("shim")
+    real_git = shutil.which("git")
+    (shim / "git").write_text(
+        f'#!/bin/sh\n[ "$1" = rev-list ] && exit 1\nexec "{real_git}" "$@"\n'
+    )
+    (shim / "git").chmod(0o755)
+    env = {**_env(), "PATH": f"{shim}{os.pathsep}{os.environ['PATH']}"}
+    res = subprocess.run(  # noqa: S603
+        ["bash", str(SCRIPT)],  # noqa: S607
+        cwd=repo.path,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert res.returncode != 0
+    assert "decision=release" not in res.stdout
 
 
 def test_two_tags_on_one_commit_uses_highest(repo: Repo) -> None:
