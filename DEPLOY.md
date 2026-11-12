@@ -115,7 +115,10 @@ The workflow will:
 
 ## Subsequent deploys
 
-Pushing a `v*` tag triggers a full deploy. Regular pushes to `master` only run tests and lint.
+Pushing a `v*` tag triggers a full deploy. Regular pushes to `master` (and
+merged PRs) only run tests, lint and an image build check; they reach
+production only when someone tags. The yt-dlp updater below tags on its own
+only when `master` has nothing else unreleased.
 
 ```bash
 git tag v1.2.3 && git push origin v1.2.3
@@ -127,12 +130,43 @@ The image is pushed to GHCR with two tags:
 
 ### Automated yt-dlp releases
 
-`update-yt-dlp.yml` bumps the lockfile daily, commits, and pushes a patch tag.
-That push uses the default `GITHUB_TOKEN`, and GitHub does not start workflow
-runs for `GITHUB_TOKEN` pushes — so the tag alone deploys nothing. The updater
-therefore calls `ci.yml` directly as a reusable workflow (`build_tag` input),
-which builds and deploys the tag it just pushed. Do not "simplify" that call
-away: without it the bumped yt-dlp is tagged but never reaches the server.
+`update-yt-dlp.yml` checks PyPI every 4 hours. When a newer yt-dlp release has
+passed the one-day cooldown, it bumps `uv.lock` and commits the bump to
+`master`. What happens next depends on what else is on `master`:
+
+- **Nothing unreleased since the last tag** (only the updater's own earlier
+  bumps, if any): it pushes the next patch tag and deploys it, with nobody
+  involved.
+- **Anything else since the last tag** (a merged PR, a hand-made commit, a
+  merge commit), or when a newer `v*` tag exists that is not on `master`: it
+  pushes the bump but no tag, writes the unreleased commits and a suggested
+  tag to the run summary, and fails the run with "Manual release needed".
+  GitHub sends failure notifications for a scheduled run to whoever last
+  edited the `cron` line in the workflow (for a manual run, whoever started
+  it), so make sure that is you. Production keeps the old yt-dlp until you
+  tag `master` yourself, which ships the bump together with the work you
+  merged:
+
+  ```bash
+  git pull && git tag v1.2.3 && git push origin v1.2.3
+  ```
+
+  Only the run that commits the bump fails. Later runs find the lock already
+  current and pass, so one email per held yt-dlp version.
+
+So merging a PR no longer means "deploy at the next yt-dlp release". It
+means "this waits until I tag". The cost: while unreleased work sits on
+`master`, a yt-dlp fix waits for your tag too. Tag promptly, or keep `master`
+releasable. The rules live in `scripts/release_decision.sh` and are tested by
+`tests/test_release_decision.py`.
+
+The updater's pushes use the default `GITHUB_TOKEN`, and GitHub does not start
+workflow runs for `GITHUB_TOKEN` pushes, so its tag alone deploys nothing (and
+its untagged bump commits get no CI run on `master`; CI runs when you tag).
+The updater therefore calls `ci.yml` directly as a reusable workflow
+(`build_tag` input), which builds and deploys the tag it just pushed. Do not
+"simplify" that call away: without it the bumped yt-dlp is tagged but never
+reaches the server.
 
 ---
 
