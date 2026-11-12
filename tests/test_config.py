@@ -215,6 +215,48 @@ class TestConfigAllowedUsersParsed:
         assert all(isinstance(uid, int) for uid in settings.ALLOWED_USER_IDS)
 
 
+_USER_ID_LIST_CASES = [
+    ("ALLOWED_USER_IDS", "1,2", [1, 2]),
+    ("ALLOWED_USER_IDS", "", []),
+    ("TIMESTAMP_EDITOR_IDS", "7", [7]),
+    ("TIMESTAMP_EDITOR_IDS", "[3, 4]", [3, 4]),
+]
+
+
+class TestUserIdListsParseTheSameFromEveryEnvSource:
+    """A real env var and a line in the .env file give the same list.
+
+    Regression: the comma-separated parser used to cover only real env vars, so
+    ALLOWED_USER_IDS=1,2 or an empty ALLOWED_USER_IDS= in .env raised
+    SettingsError and TIMESTAMP_EDITOR_IDS=7 in .env became [].
+    """
+
+    @pytest.fixture(autouse=True)
+    def clear_list_vars(self, monkeypatch):
+        monkeypatch.delenv("ALLOWED_USER_IDS", raising=False)
+        monkeypatch.delenv("TIMESTAMP_EDITOR_IDS", raising=False)
+
+    @pytest.mark.parametrize(("name", "raw", "expected"), _USER_ID_LIST_CASES)
+    def test_real_env_var(self, monkeypatch, name, raw, expected):
+        from src.config import Settings
+
+        monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123:dummy")
+        monkeypatch.setenv(name, raw)
+
+        settings = Settings(_env_file=None)
+        assert getattr(settings, name) == expected
+
+    @pytest.mark.parametrize(("name", "raw", "expected"), _USER_ID_LIST_CASES)
+    def test_dotenv_file(self, tmp_path, name, raw, expected):
+        from src.config import Settings
+
+        env_file = tmp_path / ".env"
+        env_file.write_text(f"TELEGRAM_BOT_TOKEN=123:dummy\n{name}={raw}\n")
+
+        settings = Settings(_env_file=env_file)
+        assert getattr(settings, name) == expected
+
+
 class TestConfigOverrideFromEnv:
     """Settings values can be overridden via environment variables."""
 

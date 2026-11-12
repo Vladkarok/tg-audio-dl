@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = ">=3.13"
 resolution-markers = [
     "python_full_version >= '3.15'",
@@ -1285,7 +1285,7 @@ requires-dist = [
     { name = "boto3", specifier = ">=1.28" },
     { name = "mutagen", specifier = ">=1.47" },
     { name = "pillow", specifier = ">=10.0" },
-    { name = "pydantic-settings", specifier = ">=2.0" },
+    { name = "pydantic-settings", specifier = ">=2.7" },
     { name = "pysocks", specifier = ">=1.7" },
     { name = "python-telegram-bot", specifier = ">=20.7" },
     { name = "yt-dlp", specifier = ">=2024.1.1" },

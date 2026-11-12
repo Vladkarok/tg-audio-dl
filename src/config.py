@@ -1,25 +1,16 @@
 import json
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
 from pydantic import field_validator, model_validator
-from pydantic_settings import BaseSettings, EnvSettingsSource, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
-_USER_ID_LIST_FIELDS = frozenset(("ALLOWED_USER_IDS", "TIMESTAMP_EDITOR_IDS"))
-
-
-class _CommaSeparatedEnvSource(EnvSettingsSource):
-    """Custom env source that treats the user-id list settings as plain strings
-    instead of attempting JSON decoding on comma-separated values."""
-
-    def prepare_field_value(
-        self, field_name: str, field: Any, value: Any, value_is_complex: bool
-    ) -> Any:
-        if field_name in _USER_ID_LIST_FIELDS and isinstance(value, str):
-            # Return raw string; pydantic model_validator will parse it
-            return value
-        return super().prepare_field_value(field_name, field, value, value_is_complex)
+# The user-id list settings are comma-separated ("1,2"), not JSON. NoDecode
+# stops pydantic-settings from JSON-decoding them in every env source (real
+# environment variables and the .env file alike); parse_allowed_user_ids
+# below turns the raw string into a list.
+_UserIdList = Annotated[list[int], NoDecode]
 
 
 class Settings(BaseSettings):
@@ -46,13 +37,13 @@ class Settings(BaseSettings):
     COOKIES_FILE: str | None = None
 
     MAX_FILE_SIZE_MB: int = 2000
-    ALLOWED_USER_IDS: list[int] = []
+    ALLOWED_USER_IDS: _UserIdList = []
     # Who may write hand-entered chapter timestamps with /timestamps. Unlike
     # ALLOWED_USER_IDS (empty = everyone), this one is fail-closed: empty means
     # nobody can edit. Manual chapters are stored per video_id and shown to
     # every user who requests that track, so write access is not something to
     # hand out by default.
-    TIMESTAMP_EDITOR_IDS: list[int] = []
+    TIMESTAMP_EDITOR_IDS: _UserIdList = []
     LOG_LEVEL: str = "INFO"
     PLAYLIST_MAX_TRACKS: int = 50
     RATE_LIMIT_PER_MINUTE: int = 5
@@ -76,22 +67,6 @@ class Settings(BaseSettings):
     HEARTBEAT_INTERVAL_SECONDS: int = 30
     HEARTBEAT_PROBE_TIMEOUT_SECONDS: int = 20
     HEARTBEAT_MAX_FAILURES: int = 3
-
-    @classmethod
-    def settings_customise_sources(
-        cls,
-        settings_cls: type[BaseSettings],
-        init_settings: Any,
-        env_settings: Any,
-        dotenv_settings: Any,
-        file_secret_settings: Any,
-    ) -> tuple[Any, ...]:
-        return (
-            init_settings,
-            _CommaSeparatedEnvSource(settings_cls),
-            dotenv_settings,
-            file_secret_settings,
-        )
 
     @field_validator(
         "TELEGRAM_LOCAL_SERVER_URL",
@@ -123,7 +98,7 @@ class Settings(BaseSettings):
                     parsed = json.loads(stripped)
                     if isinstance(parsed, list):
                         return [int(uid) for uid in parsed]
-                except (json.JSONDecodeError, ValueError):
+                except json.JSONDecodeError, ValueError:
                     pass
             return [int(uid.strip()) for uid in stripped.split(",") if uid.strip()]
         if isinstance(v, list):
@@ -247,7 +222,7 @@ class Settings(BaseSettings):
         return v
 
     @model_validator(mode="after")
-    def validate_s3_config(self) -> "Settings":
+    def validate_s3_config(self) -> Settings:
         if self.S3_ENABLED and not self.S3_BUCKET:
             raise ValueError("S3_BUCKET must be set when S3_ENABLED=True")
         # AWS keys are optional — boto3 falls back to its credential chain
@@ -255,7 +230,7 @@ class Settings(BaseSettings):
         return self
 
     @model_validator(mode="after")
-    def validate_tmp_age_vs_timeout(self) -> "Settings":
+    def validate_tmp_age_vs_timeout(self) -> Settings:
         if self.TMP_MAX_AGE_SECONDS <= self.DOWNLOAD_TIMEOUT_SECONDS:
             raise ValueError(
                 f"TMP_MAX_AGE_SECONDS ({self.TMP_MAX_AGE_SECONDS}) must be greater "

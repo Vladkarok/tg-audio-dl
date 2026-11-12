@@ -10,7 +10,7 @@ requires-python = ">=3.13"
 dependencies = [
     "python-telegram-bot>=20.7",
     "yt-dlp>=2024.1.1",
-    "pydantic-settings>=2.0",
+    "pydantic-settings>=2.7",
     "aiofiles>=23.0",
     "pysocks>=1.7",
     "mutagen>=1.47",
@@ -39,7 +39,11 @@ addopts = "--cov=src --cov-report=term-missing --cov-fail-under=80 -v"
 
 [tool.ruff]
 line-length = 88
-target-version = "py313"
+# The Python the image runs and CI tests on (Dockerfile final stage), like
+# mypy's python_version below. The rewrites it asks for need 3.14+ (PEP 758
+# unparenthesized except, PEP 649 unquoted self-references in class bodies),
+# so the code no longer runs on 3.13 even though requires-python allows it.
+target-version = "py315"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "S"]
@@ -55,7 +59,7 @@ ignore = ["S101"]  # allow assert in tests
 ]
 
 [tool.mypy]
-python_version = "3.13"
+python_version = "3.15"
 strict = true
 warn_return_any = true
 warn_unused_ignores = true
