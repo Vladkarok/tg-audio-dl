@@ -523,7 +523,7 @@ async def handle_timestamps(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     elif parsed_url is not None:
         try:
             metadata = await downloader.fetch_metadata(parsed_url)
-        except (VideoUnavailableError, DownloadError):
+        except VideoUnavailableError, DownloadError:
             logger.info(
                 "Could not fetch metadata for /timestamps on %s",
                 video_id,
@@ -1061,7 +1061,7 @@ async def handle_chapters(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if display_title == video_id and not metadata_checked:
         try:
             metadata = await downloader.fetch_metadata(parsed_url)
-        except (VideoUnavailableError, DownloadError):
+        except VideoUnavailableError, DownloadError:
             logger.info(
                 "Could not fetch display title for cached chapters %s",
                 video_id,
