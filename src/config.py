@@ -98,7 +98,7 @@ class Settings(BaseSettings):
                     parsed = json.loads(stripped)
                     if isinstance(parsed, list):
                         return [int(uid) for uid in parsed]
-                except (json.JSONDecodeError, ValueError):
+                except json.JSONDecodeError, ValueError:
                     pass
             return [int(uid.strip()) for uid in stripped.split(",") if uid.strip()]
         if isinstance(v, list):
@@ -222,7 +222,7 @@ class Settings(BaseSettings):
         return v
 
     @model_validator(mode="after")
-    def validate_s3_config(self) -> "Settings":
+    def validate_s3_config(self) -> Settings:
         if self.S3_ENABLED and not self.S3_BUCKET:
             raise ValueError("S3_BUCKET must be set when S3_ENABLED=True")
         # AWS keys are optional — boto3 falls back to its credential chain
@@ -230,7 +230,7 @@ class Settings(BaseSettings):
         return self
 
     @model_validator(mode="after")
-    def validate_tmp_age_vs_timeout(self) -> "Settings":
+    def validate_tmp_age_vs_timeout(self) -> Settings:
         if self.TMP_MAX_AGE_SECONDS <= self.DOWNLOAD_TIMEOUT_SECONDS:
             raise ValueError(
                 f"TMP_MAX_AGE_SECONDS ({self.TMP_MAX_AGE_SECONDS}) must be greater "
