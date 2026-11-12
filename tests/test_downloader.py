@@ -18,6 +18,7 @@ from src.downloader.client import (
     DownloadResult,
     FileTooLargeError,
     VideoUnavailableError,
+    _js_runtimes,
 )
 from src.downloader.url_parser import ParsedURL, Platform, URLType
 
@@ -2088,10 +2089,10 @@ class TestFetchMetadata:
         assert "progress_hooks" not in opts or not opts["progress_hooks"]
         assert "embedchapters" not in opts or not opts["embedchapters"]
 
-    async def test_fetch_metadata_enables_node_js_runtime(self, tmp_path: Path) -> None:
-        """fetch_metadata must set js_runtimes={'node': {}} like download().
+    async def test_fetch_metadata_enables_deno_js_runtime(self, tmp_path: Path) -> None:
+        """fetch_metadata must set js_runtimes={'deno': {}} like download().
 
-        YouTube's JS signature challenge requires a Node.js runtime even
+        YouTube's JS signature challenge requires a JS runtime even
         for metadata-only extract_info calls on many videos.
         """
         downloader = AudioDownloader(download_dir=tmp_path, max_file_size_bytes=10**9)
@@ -2105,7 +2106,7 @@ class TestFetchMetadata:
         with patch("src.downloader.client.yt_dlp.YoutubeDL", side_effect=fake_ydl_cls):
             await downloader.fetch_metadata(_make_parsed_single())
 
-        assert captured_opts[0].get("js_runtimes") == {"node": {}}
+        assert captured_opts[0].get("js_runtimes") == _js_runtimes() == {"deno": {}}
 
     async def test_fetch_metadata_geo_block_classified_as_unavailable(
         self, tmp_path: Path

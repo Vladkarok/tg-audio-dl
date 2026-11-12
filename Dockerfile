@@ -14,10 +14,12 @@ RUN uv sync --frozen --no-dev --no-install-project
 # Production stage
 FROM python:3.15-slim AS final
 
-# Install ffmpeg and nodejs (ffmpeg for audio conversion, nodejs for yt-dlp JS challenge solving)
+# ffmpeg for audio conversion. The JavaScript runtime yt-dlp needs for
+# YouTube's challenges (deno) and its solver scripts (yt-dlp-ejs) come from
+# uv.lock via the yt-dlp[default,deno] extras, not from apt: Debian's nodejs
+# is older than yt-dlp's minimum supported version.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
-    nodejs \
     && rm -rf /var/lib/apt/lists/*
 
 # Create non-root user with high UID to avoid collisions with host system users

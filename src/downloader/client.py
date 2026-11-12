@@ -231,6 +231,18 @@ _TRANSIENT_MARKERS = (
     "remote end closed",
 )
 
+
+def _js_runtimes() -> dict[str, dict[str, str]]:
+    """yt-dlp ``js_runtimes`` option for YouTube's signature/n challenges.
+
+    deno is yt-dlp's default and recommended runtime; the yt-dlp[pin-deno]
+    extra installs it into the venv and yt-dlp-ejs supplies the solver
+    scripts. A fresh dict per call: YoutubeDL edits the one it is given.
+    scripts/smoke_test.py checks the same runtimes after each deploy.
+    """
+    return {"deno": {}}
+
+
 # Total attempts per download, and the wait before each retry.
 #
 # The first values here were 2s and 5s, tuned for the stale-signature theory
@@ -381,10 +393,10 @@ class AudioDownloader:
             "skip_download": True,
             "noplaylist": True,
             "socket_timeout": self._download_timeout,
-            # Same Node.js setting as the download path — YouTube's JS
+            # Same JS runtime as the download path — YouTube's JS
             # signature challenge is required even for metadata-only
             # extract_info calls on many videos.
-            "js_runtimes": {"node": {}},
+            "js_runtimes": _js_runtimes(),
         }
         if self._proxy_url is not None:
             opts["proxy"] = self._proxy_url
@@ -1011,8 +1023,8 @@ class AudioDownloader:
             # even if asyncio.wait_for fires first (the thread keeps running until
             # a blocking network call returns; socket_timeout bounds that wait).
             "socket_timeout": self._download_timeout,
-            # Explicitly enable Node.js for YouTube JS signature challenges
-            "js_runtimes": {"node": {}},
+            # JS runtime for YouTube's signature/n challenges.
+            "js_runtimes": _js_runtimes(),
         }
         if self._proxy_url is not None:
             opts["proxy"] = self._proxy_url

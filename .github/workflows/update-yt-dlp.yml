@@ -92,6 +92,10 @@ jobs:
           echo "Cooldown-compliant target: $TARGET"
           echo "version=$TARGET" >> "$GITHUB_OUTPUT"
 
+      # yt-dlp-ejs and deno need no --upgrade-package of their own: yt-dlp's
+      # `default` and `pin-deno` extras pin them with ==, so the resolver moves
+      # them whenever the new yt-dlp pins different versions. The test job's
+      # tests/test_js_runtime.py fails the release if they ever drift apart.
       - name: Update yt-dlp
         run: uv lock --upgrade-package "yt-dlp==${{ steps.target.outputs.version }}"
 
