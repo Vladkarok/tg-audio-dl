@@ -143,7 +143,7 @@ def _make_client_error(code: str) -> botocore.exceptions.ClientError:
     )
 
 
-def _make_cache_with_mock_client(local_tmp: Path) -> tuple["S3Cache", MagicMock]:
+def _make_cache_with_mock_client(local_tmp: Path) -> tuple[S3Cache, MagicMock]:
     """Create an S3Cache with a mock _client, using mock_aws for construction."""
     with mock_aws():
         _make_bucket()
