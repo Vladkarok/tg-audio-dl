@@ -115,32 +115,93 @@ jobs:
             echo "new=${NEW}"    >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Bump patch tag and push
+      # Merging to master must not mean "deploy at the next yt-dlp release".
+      # The updater tags (and so deploys) on its own only when everything since
+      # the last tag is its own earlier bumps. Otherwise it still commits the
+      # bump but leaves tagging to a person, who then ships the bump together
+      # with the unreleased work they merged. Rules: scripts/release_decision.sh.
+      - name: Decide whether to release unattended
+        id: decide
+        if: steps.check.outputs.changed == 'true'
+        run: |
+          OUT=$(scripts/release_decision.sh)
+          echo "$OUT"
+          echo "$OUT" >> "$GITHUB_OUTPUT"
+
+      - name: Commit bump, tag if allowed, and push
         id: tag
         if: steps.check.outputs.changed == 'true'
         env:
           OLD: ${{ steps.check.outputs.old }}
           NEW: ${{ steps.check.outputs.new }}
+          DECISION: ${{ steps.decide.outputs.decision }}
+          NEW_TAG: ${{ steps.decide.outputs.next_tag }}
         run: |
-          LATEST=$(git describe --tags --abbrev=0)
-          MAJOR=$(echo "$LATEST" | sed 's/v//' | cut -d. -f1)
-          MINOR=$(echo "$LATEST" | sed 's/v//' | cut -d. -f2)
-          PATCH=$(echo "$LATEST" | sed 's/v//' | cut -d. -f3)
-          NEW_TAG="v${MAJOR}.${MINOR}.$((PATCH + 1))"
-
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add uv.lock
           git commit -m "chore: bump yt-dlp ${OLD} → ${NEW}"
-          git tag "$NEW_TAG"
-          git push origin HEAD:master "$NEW_TAG"
-          echo "tag=$NEW_TAG" >> "$GITHUB_OUTPUT"
+          if [ "$DECISION" = "release" ]; then
+            git tag "$NEW_TAG"
+            # --atomic: never leave the tag pushed without the commit, or the
+            # commit without the tag.
+            git push --atomic origin HEAD:master "$NEW_TAG"
+            echo "tag=$NEW_TAG" >> "$GITHUB_OUTPUT"
+          else
+            git push origin HEAD:master
+          fi
+
+      - name: Summary
+        if: steps.check.outputs.changed == 'true'
+        env:
+          OLD: ${{ steps.check.outputs.old }}
+          NEW: ${{ steps.check.outputs.new }}
+          DECISION: ${{ steps.decide.outputs.decision }}
+          REASON: ${{ steps.decide.outputs.reason }}
+          LAST_TAG: ${{ steps.decide.outputs.last_tag }}
+          NEXT_TAG: ${{ steps.decide.outputs.next_tag }}
+          NEW_TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          {
+            echo "## yt-dlp ${OLD} → ${NEW}"
+            echo
+            if [ "$DECISION" = "release" ]; then
+              echo "Tagged **${NEW_TAG}**; the release job builds and deploys it."
+            else
+              echo "Bump committed to master but **not released**: ${REASON}."
+              echo
+              echo "Production stays on the old yt-dlp until someone tags master by hand."
+              if [ -n "$LAST_TAG" ]; then
+                echo "That tag also ships these commits since ${LAST_TAG}:"
+                echo
+                echo '```'
+                git log --oneline --no-decorate "${LAST_TAG}..HEAD"
+                echo '```'
+                echo
+                echo "To release: \`git pull && git tag ${NEXT_TAG} && git push origin ${NEXT_TAG}\`"
+                echo "(or a higher version if the unreleased work deserves one)."
+              fi
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Fail on purpose, once: this run is the only one that sees the new
+      # version (later runs find the lock unchanged and pass), and a failed
+      # scheduled run is what GitHub emails about. A warning or a green run
+      # would let a yt-dlp fix sit unreleased with nobody noticing.
+      - name: Ask for a manual release
+        if: steps.check.outputs.changed == 'true' && steps.decide.outputs.decision != 'release'
+        env:
+          REASON: ${{ steps.decide.outputs.reason }}
+        run: |
+          echo "::error title=Manual release needed::yt-dlp bump committed but not deployed: ${REASON}. Tag master by hand to release it (see the run summary)."
+          exit 1
 
   # This push used GITHUB_TOKEN, so the tag will NOT trigger CI/CD on its own.
   # Call it explicitly, or the bumped yt-dlp never reaches production.
+  # Runs only when the updater pushed a tag; a held bump leaves `tag` empty.
   release:
     needs: update
-    if: needs.update.outputs.changed == 'true'
+    if: needs.update.outputs.tag != ''
     permissions:
       contents: read
       packages: write

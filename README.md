@@ -31,6 +31,11 @@ Deploy by pushing a version tag — the image is published to GHCR with both a p
 git tag v1.2.3 && git push origin v1.2.3
 ```
 
+Merging to `master` does not deploy. A scheduled workflow takes new yt-dlp
+releases and deploys them on its own only when `master` has nothing else
+unreleased; otherwise it commits the bump and fails the run so you tag by hand.
+Details in [DEPLOY.md](DEPLOY.md#automated-yt-dlp-releases).
+
 ## Configuration
 
 | Variable | Default | Description |
