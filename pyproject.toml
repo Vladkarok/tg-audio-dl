@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 name = "youtube-download-bot"
 version = "0.1.0"
 description = "Telegram bot for downloading YouTube audio"
-requires-python = ">=3.13"
+requires-python = ">=3.14"
 dependencies = [
     "python-telegram-bot>=20.7",
     # default: yt-dlp-ejs (YouTube challenge solver scripts) plus yt-dlp's
@@ -46,7 +46,7 @@ line-length = 88
 # The Python the image runs and CI tests on (Dockerfile final stage), like
 # mypy's python_version below. The rewrites it asks for need 3.14+ (PEP 758
 # unparenthesized except, PEP 649 unquoted self-references in class bodies),
-# so the code no longer runs on 3.13 even though requires-python allows it.
+# which is why requires-python is >=3.14. Nothing needs 3.15 yet.
 target-version = "py315"
 
 [tool.ruff.lint]
