@@ -229,3 +229,7 @@ ssh your-server "docker stats --no-stream"
 | `bot` | 512 MB | 1.5 cores |
 
 Combined hard cap: 768 MB RAM. The 8 GB swap absorbs ffmpeg/download spikes.
+
+`telegram-bot-api` writes each upload to its temp dir before sending it to Telegram. That dir is the `telegram-api-tmp` volume, on disk, so an upload needs free disk space about the size of the file while it is in flight. Completed requests delete their file. One cut off by a crash or restart can leave its file in the volume; check with `docker run --rm -v youtube-download-bot_telegram-api-tmp:/t alpine du -sh /t`.
+
+The bot reads the whole file into memory to send it, so its 512 MB limit caps uploads at roughly 450 MB without swap, well under the `MAX_FILE_SIZE_MB=2000` default.

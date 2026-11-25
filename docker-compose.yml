@@ -10,6 +10,14 @@ services:
       TELEGRAM_LOCAL: "true"
     volumes:
       - telegram-api-data:/var/lib/telegram-bot-api
+      # The server spools every uploaded file into its temp dir
+      # (TELEGRAM_TEMP_DIR=/tmp/telegram-bot-api in the image) before it sends
+      # it on. On the /tmp tmpfs that spool counts against mem_limit, so uploads
+      # over roughly 250 MB were cut off (tmpfs full, or the container
+      # OOM-killed). A disk-backed volume keeps the spool out of memory. A
+      # completed request deletes its file; a request cut off by a crash or
+      # restart can leave one behind here.
+      - telegram-api-tmp:/tmp/telegram-bot-api
     networks:
       - internal
     # No ports exposed to host — only internal network
@@ -89,3 +97,4 @@ networks:
 
 volumes:
   telegram-api-data:
+  telegram-api-tmp:
